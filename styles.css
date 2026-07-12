@@ -1,0 +1,426 @@
+/* ===================== Ink Studio ===================== */
+
+.ink-studio-view {
+  /* Anchor for the pen/sticker popovers, which are positioned absolutely
+     against this element's rect. Without this they escape to another offset
+     parent and render off-screen. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+}
+
+/* ---- Toolbar ---- */
+.ink-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  /* Keep the toolbar reachable and out of the drawing surface. */
+  flex: 0 0 auto;
+  user-select: none;
+}
+
+.ink-tb-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ink-tb-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+/* Big enough to hit with a thumb or stylus on a tablet. */
+.ink-tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.ink-tb-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ink-tool-btn.is-active {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent) inset;
+}
+
+.ink-tb-btn.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* ---- Colour swatches ---- */
+.ink-swatches {
+  gap: 4px;
+}
+
+.ink-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--background-modifier-border);
+  padding: 0;
+  cursor: pointer;
+}
+
+.ink-swatch.is-active {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+
+.ink-color-picker {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+
+/* ---- Size slider ---- */
+.ink-size-slider {
+  width: 120px;
+}
+
+/* ---- Pen presets ("pen box") ---- */
+.ink-preset-bar {
+  gap: 4px;
+}
+
+.ink-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  background: var(--background-primary);
+  cursor: pointer;
+}
+
+.ink-preset-chip svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* ---- Pen settings panel ---- */
+.ink-pen-panel {
+  position: absolute;
+  z-index: 30;
+  width: 324px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 90px);
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s), 0 8px 28px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ink-pen-preview {
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: #fff;
+}
+
+.ink-nib-row {
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.ink-nib-btn.is-active {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent) inset;
+}
+
+.ink-pen-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ink-slider-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.ink-slider-value {
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+.ink-pen-slider {
+  width: 100%;
+}
+
+.ink-pen-swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ink-swatch-add {
+  background: var(--background-secondary) !important;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ink-swatch-add svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ink-hidden-color-input {
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: none;
+  visibility: hidden;
+  position: absolute;
+}
+
+.ink-pen-box-btn {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* ---- Sticker picker ---- */
+.ink-sticker-panel {
+  position: absolute;
+  z-index: 30;
+  width: 288px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 90px);
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s), 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+
+.ink-sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+}
+
+.ink-sticker-btn {
+  font-size: 20px;
+  padding: 4px 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1.3;
+}
+
+.ink-sticker-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ink-sticker-input-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ink-sticker-input {
+  flex: 1;
+}
+
+/* ---- Template modal ---- */
+.ink-template-grid {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.ink-template-cell {
+  flex: 1;
+  text-align: center;
+  padding: 6px;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ink-template-cell.is-selected {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.ink-template-preview {
+  width: 100%;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ink-template-name {
+  margin-top: 4px;
+  font-size: var(--font-ui-smaller);
+}
+
+/* ---- Page navigation ---- */
+.ink-page-group {
+  gap: 2px;
+}
+
+.ink-page-indicator {
+  min-width: 52px;
+  text-align: center;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.ink-delete-image {
+  color: var(--text-error);
+}
+
+/* ---- Thumbnail strip ---- */
+.ink-thumb-strip {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex: 0 0 auto;
+}
+
+.ink-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 0;
+  touch-action: none; /* the strip handles its own drag gestures */
+}
+
+.ink-thumb.is-current {
+  border-color: var(--interactive-accent);
+}
+
+.ink-thumb.is-dragging {
+  opacity: 0.75;
+  z-index: 10;
+}
+
+.ink-thumb-canvas {
+  display: block;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.ink-thumb-label {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.ink-thumb-menu {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+}
+
+.ink-thumb-menu svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- Canvas surface ---- */
+.ink-canvas-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--background-secondary-alt);
+}
+
+.ink-canvas-wrapper {
+  position: relative;
+  line-height: 0;
+}
+
+.ink-canvas {
+  display: block;
+}
+
+/* The base canvas is the visible "page". */
+.ink-canvas-base {
+  position: relative;
+  background: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* The live canvas overlays the page and receives all pointer input. */
+.ink-canvas-live {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Essential for palm rejection / stylus drawing: stop the browser from
+     turning pen and touch gestures into scrolling or zooming. */
+  touch-action: none;
+  cursor: crosshair;
+}
