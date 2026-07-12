@@ -12,7 +12,7 @@ export type ToolType = "pen" | "pencil" | "highlighter" | "eraser";
  * text boxes, "shape" drag-draws geometric shapes (committed as ink strokes),
  * "text" places typed text boxes — none of these are stroke ToolTypes.
  */
-export type CanvasTool = ToolType | "select" | "shape" | "text";
+export type CanvasTool = ToolType | "select" | "shape" | "text" | "lasso";
 
 /** Nib styles for the pen family. Each renders with distinct line quality. */
 export type NibStyle = "fountain" | "fine" | "pencil" | "colored" | "charcoal";

@@ -27,7 +27,6 @@ import {
 import { TEMPLATE_LABELS } from "../canvas/templates";
 import { CanvasEngine, EngineHost } from "../canvas/CanvasEngine";
 import { AssetCache } from "../assets";
-import { renderPageToCanvas } from "../canvas/pageRender";
 import { clusterLines, strokeBBox } from "../canvas/tidy";
 import { flashcardStudioApiKey, GeminiError, transcribeHandwriting } from "../ai/gemini";
 import { ThumbnailStrip } from "./thumbnailStrip";
@@ -35,7 +34,12 @@ import { PenPanel } from "./penPanel";
 import { StickerPicker } from "./stickerPicker";
 import { TemplateModal } from "./templateModal";
 import { TextBoxModal } from "./textModal";
-import { CalligraphyModal, OcrResultModal, TidyModal } from "./aiModals";
+import {
+  CalligraphyModal,
+  OcrResultModal,
+  TidyModal,
+  renderStrokesPreview,
+} from "./aiModals";
 import type { PenConfig, PenPreset } from "../settings";
 import {
   buildPdfPages,
@@ -281,7 +285,10 @@ export class InkView extends TextFileView implements EngineHost {
         evt.preventDefault();
         this.engine.redo();
       } else if (!mod && (evt.key === "Delete" || evt.key === "Backspace")) {
-        if (this.engine.hasSelection()) {
+        if (this.engine.hasStrokeSelection()) {
+          evt.preventDefault();
+          this.engine.deleteSelectedStrokes();
+        } else if (this.engine.hasSelection()) {
           evt.preventDefault();
           this.engine.deleteSelectedImage();
         }
@@ -336,6 +343,15 @@ export class InkView extends TextFileView implements EngineHost {
     setToolIcon(selectBtn, "mouse-pointer");
     selectBtn.onclick = () => this.selectTool("select");
     this.toolButtons.set("select", selectBtn);
+
+    // Lasso: circle a part of the handwriting to act on just that part.
+    const lassoBtn = toolsGroup.createEl("button", {
+      cls: "ink-tb-btn ink-tool-btn",
+      attr: { "aria-label": "Lasso", title: "Lasso — circle strokes to select them" },
+    });
+    setToolIcon(lassoBtn, "lasso");
+    lassoBtn.onclick = () => this.selectTool("lasso");
+    this.toolButtons.set("lasso", lassoBtn);
 
     // Shape tool: pick a shape, then drag on the page.
     this.shapeBtn = toolsGroup.createEl("button", {
@@ -787,8 +803,11 @@ export class InkView extends TextFileView implements EngineHost {
   }
 
   private selectTool(tool: CanvasTool): void {
+    if (this.currentTool === "lasso" && tool !== "lasso") {
+      this.engine.clearStrokeSelection();
+    }
     this.currentTool = tool;
-    if (tool !== "select" && tool !== "shape" && tool !== "text") {
+    if (tool !== "select" && tool !== "shape" && tool !== "text" && tool !== "lasso") {
       this.plugin.settings.lastTool = tool;
       this.plugin.saveSettingsDebounced();
     }
@@ -818,7 +837,13 @@ export class InkView extends TextFileView implements EngineHost {
 
   /** Which tool the main size slider edits right now. */
   private sizeSliderTool(): ToolType | null {
-    if (this.currentTool === "select" || this.currentTool === "text") return null;
+    if (
+      this.currentTool === "select" ||
+      this.currentTool === "text" ||
+      this.currentTool === "lasso"
+    ) {
+      return null;
+    }
     if (this.currentTool === "shape") return "pen";
     return this.currentTool;
   }
@@ -989,9 +1014,29 @@ export class InkView extends TextFileView implements EngineHost {
 
   // --- AI handwriting flows ---------------------------------------------------
 
+  /**
+   * The strokes an AI action targets: the lasso selection when one exists,
+   * otherwise the whole current page.
+   */
+  private scopedStrokes(): { strokes: import("../types").Stroke[]; selection: boolean } {
+    if (this.engine.hasStrokeSelection()) {
+      return { strokes: this.engine.getSelectedStrokes(), selection: true };
+    }
+    return {
+      strokes: this.doc.pages[this.engine.getPageIndex()].strokes,
+      selection: false,
+    };
+  }
+
+  /** Render just these strokes (white background) for the OCR image. */
+  private strokesToOcrBase64(strokes: import("../types").Stroke[]): string {
+    const canvas = document.createElement("canvas");
+    renderStrokesPreview(canvas, strokes, 1100);
+    return canvas.toDataURL("image/png").split(",")[1] ?? "";
+  }
+
   /** Estimate a text size matching the handwriting (median line height). */
-  private estimateTextSize(): number {
-    const strokes = this.doc.pages[this.engine.getPageIndex()].strokes;
+  private estimateTextSize(strokes = this.doc.pages[this.engine.getPageIndex()].strokes): number {
     const lines = clusterLines(strokes);
     const heights = lines
       .map((line) => {
@@ -1014,10 +1059,10 @@ export class InkView extends TextFileView implements EngineHost {
     return this.plugin.settings.geminiApiKey.trim() || flashcardStudioApiKey(this.app);
   }
 
-  /** Option 1: OCR the current page's handwriting into a typed text box. */
+  /** Option 1: OCR handwriting (lasso selection or page) into a text box. */
   private async convertHandwritingFlow(): Promise<void> {
-    const page = this.doc.pages[this.engine.getPageIndex()];
-    if (page.strokes.length === 0) {
+    const { strokes, selection } = this.scopedStrokes();
+    if (strokes.length === 0) {
       new Notice("Ink Studio: there is no handwriting on this page.");
       return;
     }
@@ -1030,32 +1075,20 @@ export class InkView extends TextFileView implements EngineHost {
 
     const notice = new Notice("Ink Studio: recognizing handwriting…", 0);
     try {
-      // Strokes only, on white — no PDF background or images to confuse OCR.
-      const inkOnly = { ...page, bg: undefined, images: [], texts: [] };
-      const canvas = renderPageToCanvas(inkOnly, {
-        width: Math.min(1280, page.width),
-        pressureMode: this.plugin.settings.pressureMode,
-        includeBackground: true,
-        includeTemplate: false,
-        resolveBackground: () => null,
-        resolveImage: () => null,
-      });
-      const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
-
       const text = await transcribeHandwriting(
         this.geminiKey(),
         this.plugin.settings.geminiModel,
-        base64
+        this.strokesToOcrBase64(strokes)
       );
       notice.hide();
 
+      const size = this.estimateTextSize(strokes);
       new OcrResultModal(this.app, text, (finalText, removeStrokes) => {
-        this.engine.applyOcrText(
-          finalText,
-          this.estimateTextSize(),
-          this.currentColor,
-          removeStrokes
-        );
+        if (selection) {
+          this.engine.applyOcrToSelection(finalText, size, this.currentColor, removeStrokes);
+        } else {
+          this.engine.applyOcrText(finalText, size, this.currentColor, removeStrokes);
+        }
         this.selectTool("select");
         new Notice(
           removeStrokes
@@ -1075,12 +1108,13 @@ export class InkView extends TextFileView implements EngineHost {
   }
 
   /**
-   * OCR the page, then re-render the text as flowing cursive ink strokes —
-   * "professional handwriting" that is still ink, not a text box.
+   * OCR the handwriting (lasso selection or page), then re-render the text as
+   * flowing cursive ink strokes — still ink, not a text box.
    */
   private async calligraphyFlow(): Promise<void> {
     const page = this.doc.pages[this.engine.getPageIndex()];
-    if (page.strokes.length === 0) {
+    const { strokes, selection } = this.scopedStrokes();
+    if (strokes.length === 0) {
       new Notice("Ink Studio: there is no handwriting on this page.");
       return;
     }
@@ -1093,31 +1127,21 @@ export class InkView extends TextFileView implements EngineHost {
 
     const notice = new Notice("Ink Studio: reading your handwriting…", 0);
     try {
-      const inkOnly = { ...page, bg: undefined, images: [], texts: [] };
-      const canvas = renderPageToCanvas(inkOnly, {
-        width: Math.min(1280, page.width),
-        pressureMode: this.plugin.settings.pressureMode,
-        includeBackground: true,
-        includeTemplate: false,
-        resolveBackground: () => null,
-        resolveImage: () => null,
-      });
-      const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
       const text = await transcribeHandwriting(
         this.geminiKey(),
         this.plugin.settings.geminiModel,
-        base64
+        this.strokesToOcrBase64(strokes)
       );
       notice.hide();
 
       // Lay the rewritten ink where the original writing starts.
       const x = Math.max(
         40,
-        Math.min(...page.strokes.map((s) => Math.min(...s.points.map((p) => p.x))))
+        Math.min(...strokes.map((s) => Math.min(...s.points.map((p) => p.x))))
       );
       const y = Math.max(
         40,
-        Math.min(...page.strokes.map((s) => Math.min(...s.points.map((p) => p.y))))
+        Math.min(...strokes.map((s) => Math.min(...s.points.map((p) => p.y))))
       );
       new CalligraphyModal(
         this.app,
@@ -1125,13 +1149,14 @@ export class InkView extends TextFileView implements EngineHost {
         {
           x,
           y,
-          size: this.estimateTextSize(),
+          size: this.estimateTextSize(strokes),
           color: this.currentColor,
           strokeSize: Math.max(3, this.plugin.settings.toolSizes.pen),
           maxWidth: page.width - x - 60,
         },
-        (strokes) => {
-          this.engine.replacePageStrokes(strokes);
+        (generated) => {
+          if (selection) this.engine.replaceSelectedStrokes(generated);
+          else this.engine.replacePageStrokes(generated);
           new Notice("Ink Studio: rewritten in calligraphy — undo restores the original.");
         }
       ).open();
@@ -1146,15 +1171,16 @@ export class InkView extends TextFileView implements EngineHost {
     }
   }
 
-  /** Option 2: offline geometric tidy-up of the current page's handwriting. */
+  /** Option 2: offline geometric tidy-up (lasso selection or whole page). */
   private tidyHandwritingFlow(): void {
-    const page = this.doc.pages[this.engine.getPageIndex()];
-    if (page.strokes.length === 0) {
+    const { strokes, selection } = this.scopedStrokes();
+    if (strokes.length === 0) {
       new Notice("Ink Studio: there is no handwriting on this page.");
       return;
     }
-    new TidyModal(this.app, page.strokes, (tidied) => {
-      this.engine.replacePageStrokes(tidied);
+    new TidyModal(this.app, strokes, (tidied) => {
+      if (selection) this.engine.replaceSelectedStrokes(tidied);
+      else this.engine.replacePageStrokes(tidied);
       new Notice("Ink Studio: handwriting tidied — undo restores the original.");
     }).open();
   }
@@ -1249,5 +1275,46 @@ export class InkView extends TextFileView implements EngineHost {
       (r) => this.engine.updateTextBox(textId, { text: r.text, size: r.size }),
       () => this.engine.deleteTextBox(textId)
     ).open();
+  }
+  onStrokeSelection(count: number, anchor: { x: number; y: number } | null): void {
+    if (count === 0 || !anchor) {
+      if (count === 0 && anchor === null) {
+        new Notice("Ink Studio: no strokes inside the lasso.");
+      }
+      return;
+    }
+    const menu = new Menu();
+    menu.addItem((i) =>
+      i
+        .setTitle(`Tidy up (${count} strokes)…`)
+        .setIcon("wand-2")
+        .onClick(() => this.tidyHandwritingFlow())
+    );
+    menu.addItem((i) =>
+      i
+        .setTitle("Rewrite as calligraphy (AI)…")
+        .setIcon("feather")
+        .onClick(() => void this.calligraphyFlow())
+    );
+    menu.addItem((i) =>
+      i
+        .setTitle("Convert to text (AI)")
+        .setIcon("file-text")
+        .onClick(() => void this.convertHandwritingFlow())
+    );
+    menu.addSeparator();
+    menu.addItem((i) =>
+      i
+        .setTitle("Delete strokes")
+        .setIcon("trash-2")
+        .onClick(() => this.engine.deleteSelectedStrokes())
+    );
+    menu.addItem((i) =>
+      i
+        .setTitle("Deselect")
+        .setIcon("x")
+        .onClick(() => this.engine.clearStrokeSelection())
+    );
+    menu.showAtPosition({ x: anchor.x, y: anchor.y });
   }
 }

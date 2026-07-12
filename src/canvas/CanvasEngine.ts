@@ -52,6 +52,11 @@ export interface EngineHost {
   onTextPlaceRequested(x: number, y: number): void;
   /** A selected text box was tapped again: the host opens the edit dialog. */
   onTextEditRequested(textId: string): void;
+  /**
+   * A lasso selection was completed (or re-tapped). `anchor` is in client
+   * coordinates for positioning the action menu; null when nothing selected.
+   */
+  onStrokeSelection(count: number, anchor: { x: number; y: number } | null): void;
 }
 
 const HISTORY_LIMIT = 60;
@@ -216,6 +221,13 @@ export class CanvasEngine {
 
   // Shape tool
   private shapeDrag: ShapeDrag | null = null;
+
+  // Lasso tool: in-progress loop, the selected stroke ids, and drag-to-move.
+  private lassoPath: StrokePoint[] | null = null;
+  private selectedStrokeIds = new Set<string>();
+  private selectionBBox: { minX: number; minY: number; maxX: number; maxY: number } | null =
+    null;
+  private strokeMove: { lastX: number; lastY: number; moved: number } | null = null;
 
   // Ruler guide
   private ruler: RulerState | null = null;
@@ -593,6 +605,39 @@ export class CanvasEngine {
     // Chrome (ruler, selection handles) may overhang the page edge.
     this.drawRulerChrome();
     this.drawSelectionChrome();
+    this.drawLassoChrome();
+  }
+
+  private drawLassoChrome(): void {
+    if (this.host.getTool() !== "lasso") return;
+    const c = this.liveCtx;
+    const px = 1 / this.viewScale;
+    c.save();
+    if (this.lassoPath && this.lassoPath.length > 1) {
+      c.strokeStyle = "#3b82f6";
+      c.lineWidth = 1.6 * px;
+      c.setLineDash([7 * px, 5 * px]);
+      c.beginPath();
+      c.moveTo(this.lassoPath[0].x, this.lassoPath[0].y);
+      for (const p of this.lassoPath) c.lineTo(p.x, p.y);
+      c.stroke();
+    }
+    const b = this.selectionBBox;
+    if (b && this.selectedStrokeIds.size > 0) {
+      const pad = 10;
+      c.fillStyle = "rgba(59, 130, 246, 0.08)";
+      c.fillRect(b.minX - pad, b.minY - pad, b.maxX - b.minX + pad * 2, b.maxY - b.minY + pad * 2);
+      c.strokeStyle = "#3b82f6";
+      c.lineWidth = 2 * px;
+      c.setLineDash([8 * px, 5 * px]);
+      c.strokeRect(
+        b.minX - pad,
+        b.minY - pad,
+        b.maxX - b.minX + pad * 2,
+        b.maxY - b.minY + pad * 2
+      );
+    }
+    c.restore();
   }
 
   /** Materialise the active shape drag into stroke objects. */
@@ -637,6 +682,10 @@ export class CanvasEngine {
   private setSelection(id: string | null): void {
     this.selectedImageId = id;
     this.selectedTextId = null;
+    if (id === null) {
+      this.selectedStrokeIds.clear();
+      this.selectionBBox = null;
+    }
     this.notifySelection();
     this.drawLive();
   }
@@ -698,6 +747,150 @@ export class CanvasEngine {
       c.strokeRect(box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2);
       c.restore();
     }
+  }
+
+  // --- lasso stroke selection --------------------------------------------------
+
+  /** Ray-casting point-in-polygon test. */
+  private static insidePolygon(x: number, y: number, poly: StrokePoint[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x;
+      const yi = poly[i].y;
+      const xj = poly[j].x;
+      const yj = poly[j].y;
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /** Close the loop, select strokes mostly inside it, tell the host. */
+  private finishLasso(path: StrokePoint[]): void {
+    // A tiny loop is a tap: re-open the menu when inside the selection.
+    let area = 0;
+    for (let i = 0, j = path.length - 1; i < path.length; j = i++) {
+      area += (path[j].x + path[i].x) * (path[j].y - path[i].y);
+    }
+    area = Math.abs(area / 2);
+
+    if (path.length < 8 || area < 400) {
+      const pt = path[0];
+      const b = this.selectionBBox;
+      if (
+        b &&
+        this.selectedStrokeIds.size > 0 &&
+        pt.x >= b.minX - 12 &&
+        pt.x <= b.maxX + 12 &&
+        pt.y >= b.minY - 12 &&
+        pt.y <= b.maxY + 12
+      ) {
+        this.host.onStrokeSelection(this.selectedStrokeIds.size, this.selectionAnchor());
+      } else {
+        this.clearStrokeSelection();
+      }
+      this.drawLive();
+      return;
+    }
+
+    const ids = new Set<string>();
+    for (const s of this.page.strokes) {
+      let inside = 0;
+      for (const p of s.points) {
+        if (CanvasEngine.insidePolygon(p.x, p.y, path)) inside++;
+      }
+      if (inside / s.points.length >= 0.55) ids.add(s.id);
+    }
+    this.selectedStrokeIds = ids;
+    this.updateSelectionBBox();
+    this.drawLive();
+    this.host.onStrokeSelection(ids.size, ids.size ? this.selectionAnchor() : null);
+  }
+
+  private updateSelectionBBox(): void {
+    if (this.selectedStrokeIds.size === 0) {
+      this.selectionBBox = null;
+      return;
+    }
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const s of this.page.strokes) {
+      if (!this.selectedStrokeIds.has(s.id)) continue;
+      for (const p of s.points) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+    this.selectionBBox = { minX, minY, maxX, maxY };
+  }
+
+  /** Client-coordinate anchor above the selection for the action menu. */
+  private selectionAnchor(): { x: number; y: number } | null {
+    const b = this.selectionBBox;
+    if (!b) return null;
+    const rect = this.live.getBoundingClientRect();
+    const s = this.viewScale;
+    return {
+      x: rect.left + this.offX + ((b.minX + b.maxX) / 2) * s,
+      y: rect.top + this.offY + b.minY * s - 6,
+    };
+  }
+
+  hasStrokeSelection(): boolean {
+    return this.selectedStrokeIds.size > 0;
+  }
+
+  getSelectedStrokes(): Stroke[] {
+    return this.page.strokes.filter((s) => this.selectedStrokeIds.has(s.id));
+  }
+
+  clearStrokeSelection(): void {
+    if (this.selectedStrokeIds.size === 0 && !this.lassoPath) return;
+    this.selectedStrokeIds.clear();
+    this.selectionBBox = null;
+    this.lassoPath = null;
+    this.drawLive();
+  }
+
+  /** Replace just the selected strokes (tidy/calligraphy on a selection). */
+  replaceSelectedStrokes(newStrokes: Stroke[]): void {
+    if (this.selectedStrokeIds.size === 0) return;
+    this.pushHistory();
+    this.page.strokes = this.page.strokes
+      .filter((s) => !this.selectedStrokeIds.has(s.id))
+      .concat(newStrokes);
+    this.clearStrokeSelection();
+    this.redrawBase();
+    this.drawLive();
+    this.host.onChange();
+  }
+
+  deleteSelectedStrokes(): void {
+    if (this.selectedStrokeIds.size === 0) return;
+    this.replaceSelectedStrokes([]);
+  }
+
+  /** OCR result for a lasso selection: text box at the selection's top-left. */
+  applyOcrToSelection(text: string, size: number, color: string, remove: boolean): void {
+    const b = this.selectionBBox;
+    if (!b) return;
+    this.pushHistory();
+    if (remove) {
+      this.page.strokes = this.page.strokes.filter(
+        (s) => !this.selectedStrokeIds.has(s.id)
+      );
+    }
+    const t: InkText = { id: makeId("tx-"), text, x: b.minX, y: b.minY, size, color };
+    this.page.texts.push(t);
+    this.clearStrokeSelection();
+    this.redrawBase();
+    this.drawLive();
+    this.host.onChange();
   }
 
   // --- ruler guide -----------------------------------------------------------
@@ -1082,6 +1275,38 @@ export class CanvasEngine {
       // Nothing hit: fall through so a touch can still swipe between pages.
     }
 
+    // Lasso: draw a loop to select strokes; drag inside the selection to move
+    // it; tap inside to re-open the action menu; tap outside to deselect.
+    if (tool === "lasso" && (this.isDrawInput(e) || e.pointerType === "touch")) {
+      const pt = this.toPage(e);
+      if (!this.onPaper(pt)) {
+        this.clearStrokeSelection();
+        return;
+      }
+      e.preventDefault();
+      this.capturePointer(e);
+      this.activePointerId = e.pointerId;
+      this.activePointerType = e.pointerType;
+      const b = this.selectionBBox;
+      const inSelection =
+        b &&
+        pt.x >= b.minX - 12 &&
+        pt.x <= b.maxX + 12 &&
+        pt.y >= b.minY - 12 &&
+        pt.y <= b.maxY + 12;
+      if (this.selectedStrokeIds.size > 0 && inSelection) {
+        this.strokeMove = { lastX: pt.x, lastY: pt.y, moved: 0 };
+        this.gestureChanged = false;
+        this.snapshotBeforeGesture = this.clonePageSnapshot();
+      } else {
+        this.selectedStrokeIds.clear();
+        this.selectionBBox = null;
+        this.lassoPath = [{ x: pt.x, y: pt.y, p: 0.5 }];
+        this.drawLive();
+      }
+      return;
+    }
+
     // Text tool: tap anywhere on the paper to place a typed text box (any
     // pointer — placing text with a finger is deliberate, not a palm).
     if (tool === "text" && (this.isDrawInput(e) || e.pointerType === "touch")) {
@@ -1418,6 +1643,38 @@ export class CanvasEngine {
       return;
     }
 
+    if (this.lassoPath) {
+      const pt = this.toPage(e);
+      this.lassoPath.push({ x: pt.x, y: pt.y, p: 0.5 });
+      this.drawLive();
+      return;
+    }
+
+    if (this.strokeMove) {
+      const pt = this.toPage(e);
+      const dx = pt.x - this.strokeMove.lastX;
+      const dy = pt.y - this.strokeMove.lastY;
+      this.strokeMove.lastX = pt.x;
+      this.strokeMove.lastY = pt.y;
+      this.strokeMove.moved += Math.abs(dx) + Math.abs(dy);
+      if (this.strokeMove.moved > 3) this.gestureChanged = true;
+      for (const s of this.page.strokes) {
+        if (!this.selectedStrokeIds.has(s.id)) continue;
+        for (const p of s.points) {
+          p.x += dx;
+          p.y += dy;
+        }
+      }
+      if (this.selectionBBox) {
+        this.selectionBBox.minX += dx;
+        this.selectionBBox.maxX += dx;
+        this.selectionBBox.minY += dy;
+        this.selectionBBox.maxY += dy;
+      }
+      this.queueRedraw();
+      return;
+    }
+
     if (this.shapeDrag) {
       const pt = this.toPage(e);
       this.shapeDrag.x1 = pt.x;
@@ -1578,6 +1835,19 @@ export class CanvasEngine {
       return;
     }
 
+    if (this.lassoPath) {
+      const path = this.lassoPath;
+      this.lassoPath = null;
+      this.finishLasso(path);
+      return;
+    }
+
+    if (this.strokeMove) {
+      this.strokeMove = null;
+      this.finishGesture();
+      return;
+    }
+
     if (this.rulerGesture) {
       // Ruler position is transient view state: no snapshot, no save.
       this.rulerGesture = null;
@@ -1634,6 +1904,8 @@ export class CanvasEngine {
 
   private cancelActiveGesture(): void {
     this.activePointerId = null;
+    this.lassoPath = null;
+    this.strokeMove = null;
     this.activePointerType = null;
     this.current = null;
     this.erasing = false;
@@ -1725,6 +1997,9 @@ export class CanvasEngine {
     if (this.selectedTextId && !this.page.texts.some((t) => t.id === this.selectedTextId)) {
       this.setTextSelection(null);
     }
+    // Undo/redo swaps the stroke set; a stale lasso selection would lie.
+    this.selectedStrokeIds.clear();
+    this.selectionBBox = null;
     this.redrawBase();
     this.drawLive();
     this.host.onHistoryChange();
