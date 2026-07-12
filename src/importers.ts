@@ -127,6 +127,7 @@ export async function buildPdfPages(app: App, pdfPath: string): Promise<InkPage[
     height: Math.max(100, Math.round((A4_WIDTH * s.height) / s.width)),
     bg: { type: "pdf" as const, path: pdfPath, page: i + 1 },
     images: [],
+    texts: [],
     strokes: [],
   }));
 }

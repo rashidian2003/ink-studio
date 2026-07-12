@@ -27,10 +27,15 @@ import {
 import { TEMPLATE_LABELS } from "../canvas/templates";
 import { CanvasEngine, EngineHost } from "../canvas/CanvasEngine";
 import { AssetCache } from "../assets";
+import { renderPageToCanvas } from "../canvas/pageRender";
+import { clusterLines, strokeBBox } from "../canvas/tidy";
+import { flashcardStudioApiKey, GeminiError, transcribeHandwriting } from "../ai/gemini";
 import { ThumbnailStrip } from "./thumbnailStrip";
 import { PenPanel } from "./penPanel";
 import { StickerPicker } from "./stickerPicker";
 import { TemplateModal } from "./templateModal";
+import { TextBoxModal } from "./textModal";
+import { OcrResultModal, TidyModal } from "./aiModals";
 import type { PenConfig, PenPreset } from "../settings";
 import {
   buildPdfPages,
@@ -380,6 +385,15 @@ export class InkView extends TextFileView implements EngineHost {
       this.rulerBtn.toggleClass("is-active", this.engine.hasRuler());
     };
 
+    // Text tool: tap the page to place a typed text box.
+    const textBtn = toolsGroup.createEl("button", {
+      cls: "ink-tb-btn ink-tool-btn",
+      attr: { "aria-label": "Text", title: "Text (tap the page to place)" },
+    });
+    setToolIcon(textBtn, "type");
+    textBtn.onclick = () => this.selectTool("text");
+    this.toolButtons.set("text", textBtn);
+
     // Sticker picker.
     const stickerBtn = toolsGroup.createEl("button", {
       cls: "ink-tb-btn",
@@ -589,6 +603,29 @@ export class InkView extends TextFileView implements EngineHost {
       menu.showAtMouseEvent(e);
     };
 
+    // AI actions: OCR-to-text (Gemini) and the offline tidy-up pipeline.
+    const aiBtn = insertGroup.createEl("button", {
+      cls: "ink-tb-btn",
+      attr: { "aria-label": "AI handwriting tools", title: "AI handwriting tools" },
+    });
+    setToolIcon(aiBtn, "sparkles");
+    aiBtn.onclick = (e) => {
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i
+          .setTitle("Convert handwriting to text (AI)")
+          .setIcon("file-text")
+          .onClick(() => void this.convertHandwritingFlow())
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle("Tidy up handwriting…")
+          .setIcon("wand-2")
+          .onClick(() => this.tidyHandwritingFlow())
+      );
+      menu.showAtMouseEvent(e);
+    };
+
     // Overflow menu: template, export, destructive page ops.
     const moreBtn = insertGroup.createEl("button", {
       cls: "ink-tb-btn",
@@ -745,7 +782,7 @@ export class InkView extends TextFileView implements EngineHost {
 
   private selectTool(tool: CanvasTool): void {
     this.currentTool = tool;
-    if (tool !== "select" && tool !== "shape") {
+    if (tool !== "select" && tool !== "shape" && tool !== "text") {
       this.plugin.settings.lastTool = tool;
       this.plugin.saveSettingsDebounced();
     }
@@ -775,7 +812,7 @@ export class InkView extends TextFileView implements EngineHost {
 
   /** Which tool the main size slider edits right now. */
   private sizeSliderTool(): ToolType | null {
-    if (this.currentTool === "select") return null;
+    if (this.currentTool === "select" || this.currentTool === "text") return null;
     if (this.currentTool === "shape") return "pen";
     return this.currentTool;
   }
@@ -944,6 +981,106 @@ export class InkView extends TextFileView implements EngineHost {
     }
   }
 
+  // --- AI handwriting flows ---------------------------------------------------
+
+  /** Estimate a text size matching the handwriting (median line height). */
+  private estimateTextSize(): number {
+    const strokes = this.doc.pages[this.engine.getPageIndex()].strokes;
+    const lines = clusterLines(strokes);
+    const heights = lines
+      .map((line) => {
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const s of line) {
+          const b = strokeBBox(s);
+          minY = Math.min(minY, b.minY);
+          maxY = Math.max(maxY, b.maxY);
+        }
+        return maxY - minY;
+      })
+      .filter((h) => h > 10)
+      .sort((a, b) => a - b);
+    const median = heights.length ? heights[Math.floor(heights.length / 2)] : 48;
+    return Math.max(24, Math.min(64, Math.round(median * 0.7)));
+  }
+
+  private geminiKey(): string {
+    return this.plugin.settings.geminiApiKey.trim() || flashcardStudioApiKey(this.app);
+  }
+
+  /** Option 1: OCR the current page's handwriting into a typed text box. */
+  private async convertHandwritingFlow(): Promise<void> {
+    const page = this.doc.pages[this.engine.getPageIndex()];
+    if (page.strokes.length === 0) {
+      new Notice("Ink Studio: there is no handwriting on this page.");
+      return;
+    }
+    if (!this.geminiKey()) {
+      new Notice(
+        "Ink Studio: no Gemini API key. Add one in Settings → Ink Studio (or install AI Flashcard Studio with a key)."
+      );
+      return;
+    }
+
+    const notice = new Notice("Ink Studio: recognizing handwriting…", 0);
+    try {
+      // Strokes only, on white — no PDF background or images to confuse OCR.
+      const inkOnly = { ...page, bg: undefined, images: [], texts: [] };
+      const canvas = renderPageToCanvas(inkOnly, {
+        width: Math.min(1280, page.width),
+        pressureMode: this.plugin.settings.pressureMode,
+        includeBackground: true,
+        includeTemplate: false,
+        resolveBackground: () => null,
+        resolveImage: () => null,
+      });
+      const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
+
+      const text = await transcribeHandwriting(
+        this.geminiKey(),
+        this.plugin.settings.geminiModel,
+        base64
+      );
+      notice.hide();
+
+      new OcrResultModal(this.app, text, (finalText, removeStrokes) => {
+        this.engine.applyOcrText(
+          finalText,
+          this.estimateTextSize(),
+          this.currentColor,
+          removeStrokes
+        );
+        this.selectTool("select");
+        new Notice(
+          removeStrokes
+            ? "Ink Studio: converted — undo restores the handwriting."
+            : "Ink Studio: text inserted above the handwriting."
+        );
+      }).open();
+    } catch (e) {
+      notice.hide();
+      console.error("Ink Studio: OCR failed", e);
+      new Notice(
+        e instanceof GeminiError
+          ? `Ink Studio: ${e.message}`
+          : "Ink Studio: handwriting recognition failed. See console for details."
+      );
+    }
+  }
+
+  /** Option 2: offline geometric tidy-up of the current page's handwriting. */
+  private tidyHandwritingFlow(): void {
+    const page = this.doc.pages[this.engine.getPageIndex()];
+    if (page.strokes.length === 0) {
+      new Notice("Ink Studio: there is no handwriting on this page.");
+      return;
+    }
+    new TidyModal(this.app, page.strokes, (tidied) => {
+      this.engine.replacePageStrokes(tidied);
+      new Notice("Ink Studio: handwriting tidied — undo restores the original.");
+    }).open();
+  }
+
   private async exportPdfFlow(includeTemplates: boolean): Promise<void> {
     if (!this.file) return;
     const notice = new Notice("Ink Studio: exporting annotated PDF…", 0);
@@ -1014,5 +1151,25 @@ export class InkView extends TextFileView implements EngineHost {
     if (!this.deleteImageBtn) return;
     if (hasSelection) this.deleteImageBtn.show();
     else this.deleteImageBtn.hide();
+  }
+  onTextPlaceRequested(x: number, y: number): void {
+    new TextBoxModal(
+      this.app,
+      { text: "", size: 42, isNew: true },
+      (r) => {
+        this.engine.addTextBox(r.text, x, y, r.size, this.currentColor);
+        this.selectTool("select");
+      }
+    ).open();
+  }
+  onTextEditRequested(textId: string): void {
+    const t = this.engine.getTextBox(textId);
+    if (!t) return;
+    new TextBoxModal(
+      this.app,
+      { text: t.text, size: t.size, isNew: false },
+      (r) => this.engine.updateTextBox(textId, { text: r.text, size: r.size }),
+      () => this.engine.deleteTextBox(textId)
+    ).open();
   }
 }

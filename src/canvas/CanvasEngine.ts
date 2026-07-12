@@ -3,6 +3,7 @@ import type {
   InkDocument,
   InkImage,
   InkPage,
+  InkText,
   PressureMode,
   ShapeSpec,
   Stroke,
@@ -12,7 +13,7 @@ import type {
 import { makeId, newPage } from "../types";
 import { drawStroke, defaultOpacity } from "./strokeRender";
 import { drawTemplate } from "./templates";
-import { drawEmoji } from "./pageRender";
+import { drawEmoji, drawTextBox, measureTextBox } from "./pageRender";
 import { shapeStrokes } from "./shapes";
 import { pressurePctToThinning, type PenConfig } from "../settings";
 
@@ -45,16 +46,21 @@ export interface EngineHost {
   onHistoryChange(): void;
   /** Called after the visible page or the page count changed. */
   onPageChanged(index: number, count: number): void;
-  /** Called when the image selection appears/disappears. */
+  /** Called when the image/text selection appears/disappears. */
   onSelectionChange(hasSelection: boolean): void;
+  /** The text tool tapped an empty spot: the host opens the create dialog. */
+  onTextPlaceRequested(x: number, y: number): void;
+  /** A selected text box was tapped again: the host opens the edit dialog. */
+  onTextEditRequested(textId: string): void;
 }
 
 const HISTORY_LIMIT = 60;
 
-/** Everything undo/redo restores for a page: its ink and its images. */
+/** Everything undo/redo restores for a page: ink, images and text boxes. */
 interface PageSnapshot {
   strokes: Stroke[];
   images: InkImage[];
+  texts: InkText[];
 }
 
 interface PageHistory {
@@ -193,7 +199,19 @@ export class CanvasEngine {
 
   // Select-tool state
   private selectedImageId: string | null = null;
+  private selectedTextId: string | null = null;
   private imageGesture: ImageGesture | null = null;
+  private textGesture: {
+    textId: string;
+    startX: number;
+    startY: number;
+    px: number;
+    py: number;
+    moved: number;
+    wasSelected: boolean;
+  } | null = null;
+  /** Text bounding boxes measured at last redraw, for hit-testing. */
+  private textBoxes = new Map<string, { x: number; y: number; w: number; h: number }>();
   private baseRedrawQueued = false;
 
   // Shape tool
@@ -521,7 +539,14 @@ export class CanvasEngine {
       }
     }
 
-    // 4. Ink (Path2D-cached, so pinch-zoom redraws stay cheap).
+    // 4. Typed text boxes (under ink so strokes can annotate them).
+    this.textBoxes.clear();
+    for (const t of page.texts) {
+      drawTextBox(this.baseCtx, t);
+      this.textBoxes.set(t.id, measureTextBox(this.baseCtx, t));
+    }
+
+    // 5. Ink (Path2D-cached, so pinch-zoom redraws stay cheap).
     const rc = { pressureMode: this.host.getPressureMode() };
     for (const stroke of page.strokes) {
       drawStroke(this.baseCtx, stroke, rc, !!stroke.sim, true);
@@ -602,15 +627,29 @@ export class CanvasEngine {
     return this.page.images.find((i) => i.id === this.selectedImageId) ?? null;
   }
 
+  private notifySelection(): void {
+    this.host.onSelectionChange(
+      this.selectedImageId !== null || this.selectedTextId !== null
+    );
+  }
+
+  /** Select an image (or clear all element selection with null). */
   private setSelection(id: string | null): void {
-    if (this.selectedImageId === id) return;
     this.selectedImageId = id;
-    this.host.onSelectionChange(id !== null);
+    this.selectedTextId = null;
+    this.notifySelection();
+    this.drawLive();
+  }
+
+  private setTextSelection(id: string | null): void {
+    this.selectedTextId = id;
+    if (id !== null) this.selectedImageId = null;
+    this.notifySelection();
     this.drawLive();
   }
 
   hasSelection(): boolean {
-    return this.selectedImageId !== null;
+    return this.selectedImageId !== null || this.selectedTextId !== null;
   }
 
   /** Corner handle positions for an image: NW, NE, SE, SW. */
@@ -624,25 +663,41 @@ export class CanvasEngine {
   }
 
   private drawSelectionChrome(): void {
-    const img = this.selectedImage;
-    if (!img || this.host.getTool() !== "select") return;
+    if (this.host.getTool() !== "select") return;
     const c = this.liveCtx;
     const px = 1 / this.viewScale; // one CSS pixel in page units
-    c.save();
-    c.strokeStyle = "#3b82f6";
-    c.lineWidth = 2 * px;
-    c.setLineDash([8 * px, 5 * px]);
-    c.strokeRect(img.x, img.y, img.w, img.h);
-    c.setLineDash([]);
-    const hs = 7 * px; // handle half-size
-    c.fillStyle = "#ffffff";
-    for (const [hx, hy] of this.handlePositions(img)) {
-      c.beginPath();
-      c.arc(hx, hy, hs, 0, Math.PI * 2);
-      c.fill();
-      c.stroke();
+
+    const img = this.selectedImage;
+    if (img) {
+      c.save();
+      c.strokeStyle = "#3b82f6";
+      c.lineWidth = 2 * px;
+      c.setLineDash([8 * px, 5 * px]);
+      c.strokeRect(img.x, img.y, img.w, img.h);
+      c.setLineDash([]);
+      const hs = 7 * px; // handle half-size
+      c.fillStyle = "#ffffff";
+      for (const [hx, hy] of this.handlePositions(img)) {
+        c.beginPath();
+        c.arc(hx, hy, hs, 0, Math.PI * 2);
+        c.fill();
+        c.stroke();
+      }
+      c.restore();
+      return;
     }
-    c.restore();
+
+    if (this.selectedTextId) {
+      const box = this.textBoxes.get(this.selectedTextId);
+      if (!box) return;
+      const pad = 6;
+      c.save();
+      c.strokeStyle = "#3b82f6";
+      c.lineWidth = 2 * px;
+      c.setLineDash([8 * px, 5 * px]);
+      c.strokeRect(box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2);
+      c.restore();
+    }
   }
 
   // --- ruler guide -----------------------------------------------------------
@@ -749,14 +804,95 @@ export class CanvasEngine {
     c.restore();
   }
 
-  /** Remove the selected image (bound to a toolbar button / Delete key). */
+  /** Remove the selected element (bound to a toolbar button / Delete key). */
   deleteSelectedImage(): void {
+    if (this.selectedTextId) {
+      const id = this.selectedTextId;
+      this.pushHistory();
+      this.page.texts = this.page.texts.filter((t) => t.id !== id);
+      this.setTextSelection(null);
+      this.redrawBase();
+      this.host.onChange();
+      return;
+    }
     const img = this.selectedImage;
     if (!img) return;
     this.pushHistory();
     this.page.images = this.page.images.filter((i) => i.id !== img.id);
     this.setSelection(null);
     this.redrawBase();
+    this.host.onChange();
+  }
+
+  // --- text boxes ------------------------------------------------------------
+
+  getTextBox(id: string): InkText | null {
+    return this.page.texts.find((t) => t.id === id) ?? null;
+  }
+
+  addTextBox(text: string, x: number, y: number, size: number, color: string): void {
+    const t: InkText = { id: makeId("tx-"), text, x, y, size, color };
+    this.pushHistory();
+    this.page.texts.push(t);
+    this.setTextSelection(t.id);
+    this.redrawBase();
+    this.drawLive();
+    this.host.onChange();
+  }
+
+  updateTextBox(
+    id: string,
+    fields: Partial<Pick<InkText, "text" | "size" | "color">>
+  ): void {
+    const t = this.page.texts.find((x) => x.id === id);
+    if (!t) return;
+    this.pushHistory();
+    Object.assign(t, fields);
+    this.redrawBase();
+    this.drawLive();
+    this.host.onChange();
+  }
+
+  deleteTextBox(id: string): void {
+    if (!this.page.texts.some((t) => t.id === id)) return;
+    this.pushHistory();
+    this.page.texts = this.page.texts.filter((t) => t.id !== id);
+    if (this.selectedTextId === id) this.setTextSelection(null);
+    this.redrawBase();
+    this.host.onChange();
+  }
+
+  // --- AI / bulk stroke operations (single undo step each) -------------------
+
+  /** Swap in a transformed stroke set (tidy-up pipeline result). */
+  replacePageStrokes(strokes: Stroke[]): void {
+    this.pushHistory();
+    this.page.strokes = strokes;
+    this.redrawBase();
+    this.drawLive();
+    this.host.onChange();
+  }
+
+  /**
+   * Apply an OCR result: insert the recognized text as a text box (positioned
+   * at the handwriting's top-left), optionally removing the handwriting.
+   * One undo step restores everything.
+   */
+  applyOcrText(text: string, size: number, color: string, removeStrokes: boolean): void {
+    const page = this.page;
+    let x = 60;
+    let y = 60;
+    if (page.strokes.length > 0) {
+      x = Math.min(...page.strokes.map((s) => Math.min(...s.points.map((p) => p.x))));
+      y = Math.min(...page.strokes.map((s) => Math.min(...s.points.map((p) => p.y))));
+    }
+    this.pushHistory();
+    if (removeStrokes) page.strokes = [];
+    const t: InkText = { id: makeId("tx-"), text, x, y, size, color };
+    page.texts.push(t);
+    this.setTextSelection(t.id);
+    this.redrawBase();
+    this.drawLive();
     this.host.onChange();
   }
 
@@ -946,6 +1082,16 @@ export class CanvasEngine {
       // Nothing hit: fall through so a touch can still swipe between pages.
     }
 
+    // Text tool: tap anywhere on the paper to place a typed text box (any
+    // pointer — placing text with a finger is deliberate, not a palm).
+    if (tool === "text" && (this.isDrawInput(e) || e.pointerType === "touch")) {
+      const pt = this.toPage(e);
+      if (!this.onPaper(pt)) return;
+      e.preventDefault();
+      this.host.onTextPlaceRequested(pt.x, pt.y);
+      return;
+    }
+
     if (tool === "shape" && this.isDrawInput(e)) {
       const pt = this.toPage(e);
       if (!this.onPaper(pt)) return;
@@ -999,6 +1145,7 @@ export class CanvasEngine {
     this.erasing = false;
     this.imageGesture = null;
     this.shapeDrag = null;
+    this.textGesture = null;
     this.rulerGesture = null;
     this.snapshotBeforeGesture = null;
     this.gestureChanged = false;
@@ -1079,7 +1226,42 @@ export class CanvasEngine {
       }
     }
 
-    // 2. Hit-test images topmost-first.
+    // 2. Text boxes sit above images: hit-test them first, topmost-first.
+    //    Tapping an already-selected text again (without dragging) opens the
+    //    editor — that's handled on pointerup via textGesture.wasSelected.
+    for (let i = this.page.texts.length - 1; i >= 0; i--) {
+      const t = this.page.texts[i];
+      const box = this.textBoxes.get(t.id);
+      if (!box) continue;
+      const pad = 8;
+      if (
+        pt.x >= box.x - pad &&
+        pt.x <= box.x + box.w + pad &&
+        pt.y >= box.y - pad &&
+        pt.y <= box.y + box.h + pad
+      ) {
+        const wasSelected = this.selectedTextId === t.id;
+        this.setTextSelection(t.id);
+        e.preventDefault();
+        this.capturePointer(e);
+        this.activePointerId = e.pointerId;
+        this.activePointerType = e.pointerType;
+        this.textGesture = {
+          textId: t.id,
+          startX: t.x,
+          startY: t.y,
+          px: pt.x,
+          py: pt.y,
+          moved: 0,
+          wasSelected,
+        };
+        this.gestureChanged = false;
+        this.snapshotBeforeGesture = this.clonePageSnapshot();
+        return true;
+      }
+    }
+
+    // 3. Hit-test images topmost-first.
     for (let i = this.page.images.length - 1; i >= 0; i--) {
       const im = this.page.images[i];
       if (pt.x >= im.x && pt.x <= im.x + im.w && pt.y >= im.y && pt.y <= im.y + im.h) {
@@ -1214,6 +1396,20 @@ export class CanvasEngine {
 
     if (this.imageGesture) {
       this.updateImageGesture(e);
+      return;
+    }
+
+    if (this.textGesture) {
+      const g = this.textGesture;
+      const t = this.page.texts.find((x) => x.id === g.textId);
+      if (t) {
+        const pt = this.toPage(e);
+        t.x = g.startX + (pt.x - g.px);
+        t.y = g.startY + (pt.y - g.py);
+        g.moved = Math.max(g.moved, Math.hypot(pt.x - g.px, pt.y - g.py));
+        if (g.moved > 5) this.gestureChanged = true;
+        this.queueRedraw();
+      }
       return;
     }
 
@@ -1368,6 +1564,20 @@ export class CanvasEngine {
       return;
     }
 
+    if (this.textGesture) {
+      const g = this.textGesture;
+      this.textGesture = null;
+      if (g.moved <= 5 && g.wasSelected) {
+        // A clean re-tap on the selected text box: open the editor.
+        this.snapshotBeforeGesture = null;
+        this.gestureChanged = false;
+        this.host.onTextEditRequested(g.textId);
+      } else {
+        this.finishGesture();
+      }
+      return;
+    }
+
     if (this.rulerGesture) {
       // Ruler position is transient view state: no snapshot, no save.
       this.rulerGesture = null;
@@ -1429,6 +1639,7 @@ export class CanvasEngine {
     this.erasing = false;
     this.imageGesture = null;
     this.shapeDrag = null;
+    this.textGesture = null;
     this.rulerGesture = null;
     this.rulerSnapEdge = null;
     this.stabLast = null;
@@ -1495,16 +1706,24 @@ export class CanvasEngine {
 
   private clonePageSnapshot(): PageSnapshot {
     return JSON.parse(
-      JSON.stringify({ strokes: this.page.strokes, images: this.page.images })
+      JSON.stringify({
+        strokes: this.page.strokes,
+        images: this.page.images,
+        texts: this.page.texts,
+      })
     ) as PageSnapshot;
   }
 
   private restoreSnapshot(s: PageSnapshot): void {
     this.page.strokes = s.strokes;
     this.page.images = s.images;
-    // Selection may point at an image that no longer exists.
+    this.page.texts = s.texts ?? [];
+    // Selection may point at an element that no longer exists.
     if (this.selectedImageId && !this.page.images.some((i) => i.id === this.selectedImageId)) {
       this.setSelection(null);
+    }
+    if (this.selectedTextId && !this.page.texts.some((t) => t.id === this.selectedTextId)) {
+      this.setTextSelection(null);
     }
     this.redrawBase();
     this.drawLive();
@@ -1543,10 +1762,16 @@ export class CanvasEngine {
   }
 
   clearPage(): void {
-    if (this.page.strokes.length === 0 && this.page.images.length === 0) return;
+    if (
+      this.page.strokes.length === 0 &&
+      this.page.images.length === 0 &&
+      this.page.texts.length === 0
+    )
+      return;
     this.pushHistory();
     this.page.strokes = [];
     this.page.images = [];
+    this.page.texts = [];
     this.setSelection(null);
     this.redrawBase();
     this.drawLive();

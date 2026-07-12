@@ -1,6 +1,43 @@
-import type { InkImage, InkPage, PressureMode } from "../types";
+import type { InkImage, InkPage, InkText, PressureMode } from "../types";
 import { drawStroke } from "./strokeRender";
 import { drawTemplate } from "./templates";
+
+/** Font stack used for typed text boxes (canvas needs concrete families). */
+export function textFont(size: number): string {
+  return `400 ${size}px -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Vazirmatn", sans-serif`;
+}
+
+const LINE_HEIGHT = 1.32;
+
+/** Draw a text box (multi-line via \n), anchored at its top-left. */
+export function drawTextBox(ctx: CanvasRenderingContext2D, t: InkText): void {
+  ctx.save();
+  ctx.font = textFont(t.size);
+  ctx.fillStyle = t.color;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const lines = t.text.split("\n");
+  lines.forEach((line, i) => {
+    ctx.fillText(line, t.x, t.y + i * t.size * LINE_HEIGHT);
+  });
+  ctx.restore();
+}
+
+/** Measure a text box's bounding box (page units). */
+export function measureTextBox(
+  ctx: CanvasRenderingContext2D,
+  t: InkText
+): { x: number; y: number; w: number; h: number } {
+  ctx.save();
+  ctx.font = textFont(t.size);
+  const lines = t.text.split("\n");
+  let w = 0;
+  for (const line of lines) {
+    w = Math.max(w, ctx.measureText(line).width);
+  }
+  ctx.restore();
+  return { x: t.x, y: t.y, w: Math.max(w, t.size), h: lines.length * t.size * LINE_HEIGHT };
+}
 
 // Offline rendering of a full page to a standalone canvas. Shared by the
 // thumbnail strip (small, with background) and the annotated-PDF exporter
@@ -59,6 +96,10 @@ export function renderPageToCanvas(
     }
     const src = opts.resolveImage(img.path);
     if (src) ctx.drawImage(src, img.x, img.y, img.w, img.h);
+  }
+
+  for (const t of page.texts ?? []) {
+    drawTextBox(ctx, t);
   }
 
   const rc = { pressureMode: opts.pressureMode };

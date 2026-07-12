@@ -74,7 +74,12 @@ export async function exportAnnotatedPdf(
 
     const wantsTemplate =
       options.includeTemplates && !page.bg && page.template?.kind !== undefined;
-    if (page.strokes.length > 0 || page.images.length > 0 || wantsTemplate) {
+    if (
+      page.strokes.length > 0 ||
+      page.images.length > 0 ||
+      (page.texts?.length ?? 0) > 0 ||
+      wantsTemplate
+    ) {
       await assets.ensureImagesLoaded(page);
       const overlay = renderPageToCanvas(page, {
         width: Math.min(OVERLAY_WIDTH, page.width * 2),

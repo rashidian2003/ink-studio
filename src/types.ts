@@ -8,11 +8,11 @@
 export type ToolType = "pen" | "pencil" | "highlighter" | "eraser";
 
 /**
- * Everything selectable in the toolbar. "select" manipulates images/stickers,
- * "shape" drag-draws geometric shapes (committed as ink strokes) — neither is
- * a stroke ToolType.
+ * Everything selectable in the toolbar. "select" manipulates images/stickers/
+ * text boxes, "shape" drag-draws geometric shapes (committed as ink strokes),
+ * "text" places typed text boxes — none of these are stroke ToolTypes.
  */
-export type CanvasTool = ToolType | "select" | "shape";
+export type CanvasTool = ToolType | "select" | "shape" | "text";
 
 /** Nib styles for the pen family. Each renders with distinct line quality. */
 export type NibStyle = "fountain" | "fine" | "pencil" | "colored" | "charcoal";
@@ -106,6 +106,20 @@ export interface InkImage {
   h: number;
 }
 
+/**
+ * A typed text box on a page. Multi-line via \n; rendered in the app font.
+ * Created by the text tool or by AI handwriting-to-text conversion.
+ */
+export interface InkText {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  /** Font size in page units. */
+  size: number;
+  color: string;
+}
+
 /** One page of a note. Page coordinates run 0..width / 0..height. */
 export interface InkPage {
   id: string;
@@ -115,6 +129,7 @@ export interface InkPage {
   /** Paper pattern; only drawn when the page has no PDF background. */
   template?: PageTemplate;
   images: InkImage[];
+  texts: InkText[];
   strokes: Stroke[];
 }
 
@@ -155,12 +170,17 @@ export function makeId(prefix = ""): string {
 }
 
 export function newPage(width = A4_WIDTH, height = A4_HEIGHT): InkPage {
-  return { id: makeId("pg-"), width, height, images: [], strokes: [] };
+  return { id: makeId("pg-"), width, height, images: [], texts: [], strokes: [] };
 }
 
 /** True when a page has no user content (safe to silently replace/delete). */
 export function pageIsEmpty(page: InkPage): boolean {
-  return page.strokes.length === 0 && page.images.length === 0 && !page.bg;
+  return (
+    page.strokes.length === 0 &&
+    page.images.length === 0 &&
+    page.texts.length === 0 &&
+    !page.bg
+  );
 }
 
 export function emptyDocument(): InkDocument {
@@ -196,6 +216,7 @@ export function parseDocument(raw: string): InkDocument {
             bg: pg.bg,
             template: pg.template,
             images: Array.isArray(pg.images) ? pg.images : [],
+            texts: Array.isArray(pg.texts) ? pg.texts : [],
             strokes: Array.isArray(pg.strokes) ? pg.strokes : [],
           }))
         : [newPage()];

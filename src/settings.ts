@@ -46,6 +46,13 @@ export interface InkStudioSettings {
   penPresets: PenPreset[];
   /** Last selected tool. */
   lastTool: ToolType;
+  /**
+   * Gemini API key for handwriting → text conversion. When empty, Ink Studio
+   * falls back to AI Flashcard Studio's key if that plugin is installed.
+   */
+  geminiApiKey: string;
+  /** Gemini model id used for OCR. */
+  geminiModel: string;
 }
 
 export const DEFAULT_SETTINGS: InkStudioSettings = {
@@ -66,6 +73,8 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
   },
   penPresets: [],
   lastTool: "pen",
+  geminiApiKey: "",
+  geminiModel: "gemini-2.0-flash",
 };
 
 /** Maps the legacy pressure mode to perfect-freehand's `thinning` parameter. */
@@ -119,6 +128,36 @@ export class InkStudioSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         })
+      );
+
+    containerEl.createEl("h3", { text: "AI handwriting (Gemini)" });
+
+    new Setting(containerEl)
+      .setName("Gemini API key")
+      .setDesc(
+        "Used by “Convert handwriting to text”. Leave empty to reuse AI Flashcard Studio's key if that plugin is installed. Get a key at aistudio.google.com."
+      )
+      .addText((t) => {
+        t.inputEl.type = "password";
+        t.setPlaceholder("AIza…")
+          .setValue(this.plugin.settings.geminiApiKey)
+          .onChange(async (v) => {
+            this.plugin.settings.geminiApiKey = v.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Gemini model")
+      .setDesc("Any Gemini model id with vision support.")
+      .addText((t) =>
+        t
+          .setPlaceholder("gemini-2.0-flash")
+          .setValue(this.plugin.settings.geminiModel)
+          .onChange(async (v) => {
+            this.plugin.settings.geminiModel = v.trim() || "gemini-2.0-flash";
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(containerEl)

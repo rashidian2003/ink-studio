@@ -30,6 +30,8 @@ const ICONS = [
   "pen-line",
   "palette",
   "brush",
+  "type",
+  "sparkles",
 ];
 
 const entries = ICONS.map((name) => {
