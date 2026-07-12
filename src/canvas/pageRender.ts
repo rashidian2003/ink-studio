@@ -63,7 +63,7 @@ export function renderPageToCanvas(
 
   const rc = { pressureMode: opts.pressureMode };
   for (const stroke of page.strokes) {
-    drawStroke(ctx, stroke, rc, !!stroke.sim);
+    drawStroke(ctx, stroke, rc, !!stroke.sim, true);
   }
 
   return canvas;

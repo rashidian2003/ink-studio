@@ -399,35 +399,29 @@
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: hidden;
   background: var(--background-secondary-alt);
+  touch-action: none;
 }
 
+/* Both canvases fill the viewport; the page is drawn through a pan/zoom
+   transform inside them (paper fill + shadow are painted on the canvas). */
 .ink-canvas-wrapper {
-  position: relative;
+  position: absolute;
+  inset: 0;
   line-height: 0;
+  touch-action: none;
 }
 
 .ink-canvas {
   display: block;
-}
-
-/* The base canvas is the visible "page". */
-.ink-canvas-base {
-  position: relative;
-  background: #ffffff;
-  border-radius: 2px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
-}
-
-/* The live canvas overlays the page and receives all pointer input. */
-.ink-canvas-live {
   position: absolute;
   top: 0;
   left: 0;
+}
+
+/* The live canvas overlays the base and receives all pointer input. */
+.ink-canvas-live {
   /* Essential for palm rejection / stylus drawing: stop the browser from
      turning pen and touch gestures into scrolling or zooming. */
   touch-action: none;

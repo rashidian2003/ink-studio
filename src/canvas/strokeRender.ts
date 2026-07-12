@@ -99,14 +99,36 @@ export function strokePath(
   return new Path2D(outlineToSvgPath(outline));
 }
 
-/** Draw a single stroke onto the given context. */
+// Committed strokes never mutate (undo/redo swaps in fresh clones), so their
+// Path2D can be cached per stroke object. Paths live in page coordinates and
+// scale through the canvas transform, so one cached path serves every zoom
+// level, thumbnail and export — this is what keeps pinch-zoom redraws cheap.
+const pathCache = new WeakMap<Stroke, { sig: string; path: Path2D | null }>();
+
+/**
+ * Draw a single stroke onto the given context. Pass `cache: true` for
+ * committed strokes; leave it off for the live, still-growing stroke.
+ */
 export function drawStroke(
   c2d: CanvasRenderingContext2D,
   stroke: Stroke,
   ctx: RenderContext,
-  simulate: boolean
+  simulate: boolean,
+  cache = false
 ): void {
-  const path = strokePath(stroke, ctx, simulate);
+  let path: Path2D | null;
+  if (cache) {
+    const sig = `${ctx.pressureMode}|${simulate ? 1 : 0}|${stroke.points.length}`;
+    const hit = pathCache.get(stroke);
+    if (hit && hit.sig === sig) {
+      path = hit.path;
+    } else {
+      path = strokePath(stroke, ctx, simulate);
+      pathCache.set(stroke, { sig, path });
+    }
+  } else {
+    path = strokePath(stroke, ctx, simulate);
+  }
   if (!path) return;
   c2d.save();
   c2d.fillStyle = stroke.color;

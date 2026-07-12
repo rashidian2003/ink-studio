@@ -112,6 +112,10 @@ interface RulerGesture {
 const RULER_H = 56;
 /** Strokes starting within this distance of a ruler edge snap to it. */
 const RULER_SNAP_DIST = 34;
+/** Maximum pinch zoom on top of the fit-to-viewport scale. */
+const MAX_ZOOM = 8;
+/** Zoom level a double-tap jumps to from the fit view. */
+const DOUBLE_TAP_ZOOM = 2.2;
 
 function distToSegment(
   px: number,
@@ -153,11 +157,23 @@ export class CanvasEngine {
   private liveCtx!: CanvasRenderingContext2D;
 
   private dpr = 1;
-  private scale = 1; // page units -> CSS pixels
+  /** Scale that fits the whole page in the viewport (page units → CSS px). */
+  private fitScale = 1;
+  /** User zoom on top of fitScale: 1 = whole page visible, up to MAX_ZOOM. */
+  private zoom = 1;
+  /** Page origin in viewport CSS px (pan offset). */
+  private offX = 0;
+  private offY = 0;
   private resizeObserver: ResizeObserver | null = null;
+
+  /** Effective page-units → CSS px scale currently on screen. */
+  private get viewScale(): number {
+    return this.fitScale * this.zoom;
+  }
 
   // Active stroke state
   private activePointerId: number | null = null;
+  private activePointerType: string | null = null;
   private current: Stroke | null = null;
   private simulate = false;
   private penEverUsed = false;
@@ -165,6 +181,15 @@ export class CanvasEngine {
   private erasing = false;
   private gestureChanged = false;
   private snapshotBeforeGesture: PageSnapshot | null = null;
+
+  // Touch navigation: live contacts, pinch zoom, one-finger pan, double-tap.
+  private touchPts = new Map<number, { x: number; y: number }>();
+  private pinch: { d0: number; s0: number; wx: number; wy: number } | null = null;
+  private panDrag: { pointerId: number; lastX: number; lastY: number; moved: number } | null =
+    null;
+  private lastTapTime = 0;
+  private lastTapX = 0;
+  private lastTapY = 0;
 
   // Select-tool state
   private selectedImageId: string | null = null;
@@ -240,6 +265,20 @@ export class CanvasEngine {
     // pointer events keep flowing normally.
     add("touchstart", ((e: Event) => e.preventDefault()) as EventListener);
     add("touchmove", ((e: Event) => e.preventDefault()) as EventListener);
+    // Desktop: wheel pans, ctrl/cmd+wheel zooms towards the cursor.
+    add("wheel", ((e: WheelEvent) => {
+      e.preventDefault();
+      const rect = this.live.getBoundingClientRect();
+      if (e.ctrlKey || e.metaKey) {
+        const factor = Math.exp(-e.deltaY * 0.0022);
+        this.setZoomAt(e.clientX - rect.left, e.clientY - rect.top, this.viewScale * factor);
+      } else {
+        this.offX -= e.deltaX;
+        this.offY -= e.deltaY;
+        this.clampView();
+        this.queueRedraw();
+      }
+    }) as EventListener);
 
     this.resizeObserver = new ResizeObserver(() => this.layout());
     this.resizeObserver.observe(container);
@@ -261,6 +300,7 @@ export class CanvasEngine {
     this.selectedImageId = null;
     this.host.onHistoryChange();
     this.host.onSelectionChange(false);
+    this.resetView();
     this.layout();
     this.host.onPageChanged(this.pageIndex, doc.pages.length);
   }
@@ -285,6 +325,7 @@ export class CanvasEngine {
     this.cancelActiveGesture();
     this.pageIndex = clamped;
     this.setSelection(null);
+    this.resetView();
     this.layout();
     this.host.onHistoryChange();
     this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
@@ -301,6 +342,7 @@ export class CanvasEngine {
     this.doc.pages.splice(afterIndex + 1, 0, pg);
     this.pageIndex = afterIndex + 1;
     this.setSelection(null);
+    this.resetView();
     this.layout();
     this.host.onHistoryChange();
     this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
@@ -312,6 +354,7 @@ export class CanvasEngine {
     this.doc.pages.splice(atIndex, 0, ...pages);
     this.pageIndex = atIndex;
     this.setSelection(null);
+    this.resetView();
     this.layout();
     this.host.onHistoryChange();
     this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
@@ -326,6 +369,7 @@ export class CanvasEngine {
     if (this.doc.pages.length === 0) this.doc.pages.push(newPage());
     this.pageIndex = Math.max(0, Math.min(this.pageIndex, this.doc.pages.length - 1));
     this.setSelection(null);
+    this.resetView();
     this.layout();
     this.host.onHistoryChange();
     this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
@@ -358,32 +402,69 @@ export class CanvasEngine {
     const availH = container.clientHeight;
     if (availW <= 0 || availH <= 0) return;
 
+    // The canvases always cover the whole viewport; the page is drawn through
+    // a pan/zoom transform. Pixel buffers stay viewport-sized, so zooming
+    // never explodes canvas memory, and ink re-renders vector-crisp at any
+    // zoom level.
+    this.dpr = window.devicePixelRatio || 1;
+    for (const c of [this.base, this.live]) {
+      c.style.width = `${availW}px`;
+      c.style.height = `${availH}px`;
+      c.width = Math.round(availW * this.dpr);
+      c.height = Math.round(availH * this.dpr);
+    }
+
     const page = this.page;
-    const margin = 8;
-    // Contain the whole page in the viewport so it's fully visible/drawable.
-    // (Zoom & pan for larger-than-viewport work arrives with gesture support.)
-    this.scale = Math.min(
+    const margin = 10;
+    this.fitScale = Math.min(
       (availW - margin * 2) / page.width,
       (availH - margin * 2) / page.height
     );
-    if (!isFinite(this.scale) || this.scale <= 0) this.scale = 1;
+    if (!isFinite(this.fitScale) || this.fitScale <= 0) this.fitScale = 1;
 
-    const cssW = page.width * this.scale;
-    const cssH = page.height * this.scale;
-    this.dpr = window.devicePixelRatio || 1;
-
-    for (const c of [this.base, this.live]) {
-      c.style.width = `${cssW}px`;
-      c.style.height = `${cssH}px`;
-      c.width = Math.round(cssW * this.dpr);
-      c.height = Math.round(cssH * this.dpr);
-    }
-    const k = this.scale * this.dpr;
-    this.baseCtx.setTransform(k, 0, 0, k, 0, 0);
-    this.liveCtx.setTransform(k, 0, 0, k, 0, 0);
-
+    this.clampView();
     this.redrawBase();
     this.drawLive();
+  }
+
+  /** Clamp zoom and pan so the page never drifts entirely off-screen. */
+  private clampView(): void {
+    const container = this.wrapper?.parentElement;
+    if (!container) return;
+    const availW = container.clientWidth;
+    const availH = container.clientHeight;
+    this.zoom = Math.max(1, Math.min(this.zoom, MAX_ZOOM));
+    const s = this.viewScale;
+    const pw = this.page.width * s;
+    const ph = this.page.height * s;
+    const m = 10;
+    // Centre when the page fits; otherwise keep an edge margin on screen.
+    this.offX = pw <= availW ? (availW - pw) / 2 : Math.max(availW - pw - m, Math.min(this.offX, m));
+    this.offY = ph <= availH ? (availH - ph) / 2 : Math.max(availH - ph - m, Math.min(this.offY, m));
+  }
+
+  private applyTransform(ctx: CanvasRenderingContext2D): void {
+    const k = this.viewScale * this.dpr;
+    ctx.setTransform(k, 0, 0, k, this.offX * this.dpr, this.offY * this.dpr);
+  }
+
+  /** Zoom to `targetScale`, keeping the host-point (hx,hy) visually fixed. */
+  private setZoomAt(hx: number, hy: number, targetScale: number): void {
+    const s0 = this.viewScale;
+    const wx = (hx - this.offX) / s0;
+    const wy = (hy - this.offY) / s0;
+    const s = Math.max(this.fitScale, Math.min(targetScale, this.fitScale * MAX_ZOOM));
+    this.zoom = s / this.fitScale;
+    this.offX = hx - wx * s;
+    this.offY = hy - wy * s;
+    this.clampView();
+    this.queueRedraw();
+  }
+
+  private resetView(): void {
+    this.zoom = 1;
+    this.pinch = null;
+    this.panDrag = null;
   }
 
   private clearCanvas(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement): void {
@@ -396,20 +477,32 @@ export class CanvasEngine {
   private redrawBase(): void {
     const page = this.page;
     this.clearCanvas(this.baseCtx, this.base);
+    this.applyTransform(this.baseCtx);
 
-    // 1. Background: white paper, then paper template or PDF page render.
+    // 1. The paper itself (the area around it stays the host background).
     this.baseCtx.save();
     this.baseCtx.fillStyle = "#ffffff";
+    this.baseCtx.shadowColor = "rgba(0, 0, 0, 0.35)";
+    this.baseCtx.shadowBlur = 12;
+    this.baseCtx.shadowOffsetY = 3;
     this.baseCtx.fillRect(0, 0, page.width, page.height);
+    this.baseCtx.restore();
+
+    // Everything on the paper is clipped to it, like ink on a real page.
+    this.baseCtx.save();
+    this.baseCtx.beginPath();
+    this.baseCtx.rect(0, 0, page.width, page.height);
+    this.baseCtx.clip();
+
+    // 2. Background: PDF page render or paper template.
     if (page.bg) {
       const bg = this.host.resolveBackground(page);
       if (bg) this.baseCtx.drawImage(bg, 0, 0, page.width, page.height);
     } else if (page.template) {
       drawTemplate(this.baseCtx, page.template, page.width, page.height);
     }
-    this.baseCtx.restore();
 
-    // 2. Images and stickers (under ink, so strokes annotate on top of them).
+    // 3. Images and stickers (under ink, so strokes annotate on top of them).
     for (const img of page.images) {
       if (img.emoji) {
         drawEmoji(this.baseCtx, img);
@@ -428,25 +521,35 @@ export class CanvasEngine {
       }
     }
 
-    // 3. Ink.
+    // 4. Ink (Path2D-cached, so pinch-zoom redraws stay cheap).
     const rc = { pressureMode: this.host.getPressureMode() };
     for (const stroke of page.strokes) {
-      drawStroke(this.baseCtx, stroke, rc, !!stroke.sim);
+      drawStroke(this.baseCtx, stroke, rc, !!stroke.sim, true);
     }
+
+    this.baseCtx.restore();
   }
 
-  /** rAF-throttled base redraw for continuous ops like image dragging. */
-  private queueBaseRedraw(): void {
+  /** rAF-throttled full redraw for continuous ops (pinch, pan, image drag). */
+  private queueRedraw(): void {
     if (this.baseRedrawQueued) return;
     this.baseRedrawQueued = true;
     requestAnimationFrame(() => {
       this.baseRedrawQueued = false;
       this.redrawBase();
+      this.drawLive();
     });
   }
 
   private drawLive(): void {
     this.clearCanvas(this.liveCtx, this.live);
+    this.applyTransform(this.liveCtx);
+
+    // In-progress ink is clipped to the paper like the committed ink.
+    this.liveCtx.save();
+    this.liveCtx.beginPath();
+    this.liveCtx.rect(0, 0, this.page.width, this.page.height);
+    this.liveCtx.clip();
     if (this.current) {
       drawStroke(
         this.liveCtx,
@@ -460,6 +563,9 @@ export class CanvasEngine {
         drawStroke(this.liveCtx, stroke, { pressureMode: this.host.getPressureMode() }, false);
       }
     }
+    this.liveCtx.restore();
+
+    // Chrome (ruler, selection handles) may overhang the page edge.
     this.drawRulerChrome();
     this.drawSelectionChrome();
   }
@@ -521,7 +627,7 @@ export class CanvasEngine {
     const img = this.selectedImage;
     if (!img || this.host.getTool() !== "select") return;
     const c = this.liveCtx;
-    const px = 1 / this.scale; // one CSS pixel in page units
+    const px = 1 / this.viewScale; // one CSS pixel in page units
     c.save();
     c.strokeStyle = "#3b82f6";
     c.lineWidth = 2 * px;
@@ -608,7 +714,7 @@ export class CanvasEngine {
     const r = this.ruler;
     if (!r) return;
     const c = this.liveCtx;
-    const px = 1 / this.scale;
+    const px = 1 / this.viewScale;
     c.save();
     c.translate(r.cx, r.cy);
     c.rotate(r.angle);
@@ -722,9 +828,11 @@ export class CanvasEngine {
 
   private toPage(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const rect = this.live.getBoundingClientRect();
-    const sx = this.page.width / rect.width;
-    const sy = this.page.height / rect.height;
-    return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy };
+    const s = this.viewScale;
+    return {
+      x: (e.clientX - rect.left - this.offX) / s,
+      y: (e.clientY - rect.top - this.offY) / s,
+    };
   }
 
   private pressureOf(e: PointerEvent): number {
@@ -792,6 +900,21 @@ export class CanvasEngine {
       this.penLastSeen = Date.now();
     }
 
+    // Track every touch contact; two fingers = pinch zoom / pan — unless the
+    // pen is mid-stroke (a palm plus a knuckle must never zoom the page while
+    // writing). A one-finger touch gesture (finger drawing, pan) yields to the
+    // pinch: fingers navigating beats fingers drawing.
+    if (e.pointerType === "touch") {
+      this.touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touchPts.size === 2 && !this.pinch && this.activePointerType !== "pen") {
+        e.preventDefault();
+        this.abortActiveTouchGesture();
+        this.startPinch();
+        return;
+      }
+      if (this.pinch) return; // extra fingers while pinching: ignore
+    }
+
     // Palm rejection: while a gesture is active, ignore every other pointer.
     // A palm landing mid-stroke arrives as a separate 'touch' pointer and is
     // dropped here; the pen keeps drawing uninterrupted.
@@ -809,6 +932,7 @@ export class CanvasEngine {
         e.preventDefault();
         this.capturePointer(e);
         this.activePointerId = e.pointerId;
+        this.activePointerType = e.pointerType;
         this.rulerGesture = { mode: hit, px: pt.x, py: pt.y, start: { ...this.ruler } };
         return;
       }
@@ -823,12 +947,14 @@ export class CanvasEngine {
     }
 
     if (tool === "shape" && this.isDrawInput(e)) {
+      const pt = this.toPage(e);
+      if (!this.onPaper(pt)) return;
       e.preventDefault();
       this.capturePointer(e);
       this.activePointerId = e.pointerId;
+      this.activePointerType = e.pointerType;
       this.gestureChanged = false;
       this.snapshotBeforeGesture = this.clonePageSnapshot();
-      const pt = this.toPage(e);
       this.shapeDrag = { x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y };
       return;
     }
@@ -838,9 +964,95 @@ export class CanvasEngine {
       return;
     }
 
-    // Unclaimed touch: candidate for a page-flip swipe.
+    // Unclaimed touch: one finger pans when zoomed in, flips pages at fit.
     if (e.pointerType === "touch") {
-      this.swipe = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() };
+      if (this.zoom > 1.02) {
+        this.panDrag = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY, moved: 0 };
+      } else {
+        this.swipe = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() };
+      }
+    }
+  }
+
+  /** Is a page-coordinate point on the paper (with a small tolerance)? */
+  private onPaper(pt: { x: number; y: number }): boolean {
+    const pad = 8;
+    return (
+      pt.x >= -pad &&
+      pt.y >= -pad &&
+      pt.x <= this.page.width + pad &&
+      pt.y <= this.page.height + pad
+    );
+  }
+
+  /** Discard a touch-driven gesture (finger stroke/drag) when a pinch begins. */
+  private abortActiveTouchGesture(): void {
+    if (this.activePointerId === null || this.activePointerType !== "touch") return;
+    try {
+      this.live.releasePointerCapture(this.activePointerId);
+    } catch {
+      /* already released */
+    }
+    this.activePointerId = null;
+    this.activePointerType = null;
+    this.current = null;
+    this.erasing = false;
+    this.imageGesture = null;
+    this.shapeDrag = null;
+    this.rulerGesture = null;
+    this.snapshotBeforeGesture = null;
+    this.gestureChanged = false;
+    this.drawLive();
+  }
+
+  private startPinch(): void {
+    const pts = [...this.touchPts.values()];
+    const rect = this.live.getBoundingClientRect();
+    const mx = (pts[0].x + pts[1].x) / 2 - rect.left;
+    const my = (pts[0].y + pts[1].y) / 2 - rect.top;
+    const d = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+    const s = this.viewScale;
+    this.pinch = { d0: d, s0: s, wx: (mx - this.offX) / s, wy: (my - this.offY) / s };
+    this.swipe = null;
+    this.panDrag = null;
+  }
+
+  private updatePinch(): void {
+    if (!this.pinch || this.touchPts.size < 2) return;
+    const pts = [...this.touchPts.values()].slice(0, 2);
+    const rect = this.live.getBoundingClientRect();
+    const mx = (pts[0].x + pts[1].x) / 2 - rect.left;
+    const my = (pts[0].y + pts[1].y) / 2 - rect.top;
+    const d = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+    let s = this.pinch.s0 * (d / this.pinch.d0);
+    s = Math.max(this.fitScale, Math.min(s, this.fitScale * MAX_ZOOM));
+    this.zoom = s / this.fitScale;
+    // The two-finger midpoint stays glued to the same spot on the page, which
+    // gives zoom-about-fingers and two-finger panning in one formula.
+    this.offX = mx - this.pinch.wx * s;
+    this.offY = my - this.pinch.wy * s;
+    this.clampView();
+    this.queueRedraw();
+  }
+
+  /** A quick second tap toggles between fit and a comfortable writing zoom. */
+  private handleTouchTap(e: PointerEvent): void {
+    const now = Date.now();
+    const isDouble =
+      now - this.lastTapTime < 350 &&
+      Math.hypot(e.clientX - this.lastTapX, e.clientY - this.lastTapY) < 48;
+    if (isDouble) {
+      const rect = this.live.getBoundingClientRect();
+      this.setZoomAt(
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        this.zoom > 1.05 ? this.fitScale : this.fitScale * DOUBLE_TAP_ZOOM
+      );
+      this.lastTapTime = 0;
+    } else {
+      this.lastTapTime = now;
+      this.lastTapX = e.clientX;
+      this.lastTapY = e.clientY;
     }
   }
 
@@ -850,7 +1062,7 @@ export class CanvasEngine {
 
     // 1. Corner handles of the current selection take priority.
     if (img) {
-      const grabR = 18 / this.scale; // ~18 CSS px grab radius
+      const grabR = 18 / this.viewScale; // ~18 CSS px grab radius
       const handles = this.handlePositions(img);
       for (let c = 0; c < handles.length; c++) {
         if (Math.hypot(handles[c][0] - pt.x, handles[c][1] - pt.y) <= grabR) {
@@ -893,20 +1105,24 @@ export class CanvasEngine {
     e.preventDefault();
     this.capturePointer(e);
     this.activePointerId = e.pointerId;
+    this.activePointerType = e.pointerType;
     this.imageGesture = gesture;
     this.gestureChanged = false;
     this.snapshotBeforeGesture = this.clonePageSnapshot();
   }
 
   private beginStroke(e: PointerEvent, tool: ToolType): void {
+    let pt = this.toPage(e);
+    // Taps on the dark area around the paper shouldn't leave marks.
+    if (!this.onPaper(pt)) return;
+
     e.preventDefault();
     this.capturePointer(e);
     this.activePointerId = e.pointerId;
+    this.activePointerType = e.pointerType;
     this.simulate = e.pointerType !== "pen";
     this.gestureChanged = false;
     this.snapshotBeforeGesture = this.clonePageSnapshot();
-
-    let pt = this.toPage(e);
 
     if (tool === "eraser") {
       this.erasing = true;
@@ -969,6 +1185,30 @@ export class CanvasEngine {
 
   private handlePointerMove(e: PointerEvent): void {
     if (e.pointerType === "pen") this.penLastSeen = Date.now();
+
+    // Finger navigation runs outside the active-gesture plumbing.
+    if (e.pointerType === "touch" && this.touchPts.has(e.pointerId)) {
+      this.touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.pinch) {
+        e.preventDefault();
+        this.updatePinch();
+        return;
+      }
+      if (this.panDrag && this.panDrag.pointerId === e.pointerId) {
+        e.preventDefault();
+        const dx = e.clientX - this.panDrag.lastX;
+        const dy = e.clientY - this.panDrag.lastY;
+        this.panDrag.lastX = e.clientX;
+        this.panDrag.lastY = e.clientY;
+        this.panDrag.moved += Math.abs(dx) + Math.abs(dy);
+        this.offX += dx;
+        this.offY += dy;
+        this.clampView();
+        this.queueRedraw();
+        return;
+      }
+    }
+
     if (e.pointerId !== this.activePointerId) return;
     e.preventDefault();
 
@@ -1061,11 +1301,28 @@ export class CanvasEngine {
     }
 
     this.gestureChanged = true;
-    this.queueBaseRedraw();
+    this.queueRedraw();
     this.drawLive();
   }
 
   private handlePointerUp(e: PointerEvent): void {
+    // Finger-navigation cleanup first: contacts, pinch, pan, double-tap.
+    if (e.pointerType === "touch") {
+      this.touchPts.delete(e.pointerId);
+      if (this.pinch) {
+        if (this.touchPts.size < 2) this.pinch = null;
+        this.panDrag = null;
+        this.swipe = null;
+        return;
+      }
+      if (this.panDrag && this.panDrag.pointerId === e.pointerId) {
+        const moved = this.panDrag.moved;
+        this.panDrag = null;
+        if (e.type === "pointerup" && moved < 12) this.handleTouchTap(e);
+        return;
+      }
+    }
+
     // Swipe-to-flip pages: a quick, mostly-horizontal single-finger flick.
     // Guarded against palms: never while inking, and not shortly after any
     // pen contact (a resting palm lingers; a deliberate flick is fast).
@@ -1084,6 +1341,14 @@ export class CanvasEngine {
         Math.abs(dy) < 70
       ) {
         this.goToPage(this.pageIndex + (dx < 0 ? 1 : -1));
+      } else if (
+        e.type === "pointerup" &&
+        this.activePointerId === null &&
+        !penRecently &&
+        Math.abs(dx) < 12 &&
+        Math.abs(dy) < 12
+      ) {
+        this.handleTouchTap(e);
       }
       return;
     }
@@ -1095,6 +1360,7 @@ export class CanvasEngine {
       /* pointer already released */
     }
     this.activePointerId = null;
+    this.activePointerType = null;
 
     if (this.imageGesture) {
       this.imageGesture = null;
@@ -1132,12 +1398,20 @@ export class CanvasEngine {
       // Ignore a lone tap that produced no real stroke.
       if (this.current.points.length >= 1) {
         this.page.strokes.push(this.current);
+        // Incremental commit: draw just this stroke onto base, clipped to the
+        // paper like a full redraw would be.
+        this.baseCtx.save();
+        this.baseCtx.beginPath();
+        this.baseCtx.rect(0, 0, this.page.width, this.page.height);
+        this.baseCtx.clip();
         drawStroke(
           this.baseCtx,
           this.current,
           { pressureMode: this.host.getPressureMode() },
-          this.simulate
+          this.simulate,
+          true
         );
+        this.baseCtx.restore();
         this.gestureChanged = true;
       }
       this.current = null;
@@ -1150,6 +1424,7 @@ export class CanvasEngine {
 
   private cancelActiveGesture(): void {
     this.activePointerId = null;
+    this.activePointerType = null;
     this.current = null;
     this.erasing = false;
     this.imageGesture = null;
@@ -1158,6 +1433,8 @@ export class CanvasEngine {
     this.rulerSnapEdge = null;
     this.stabLast = null;
     this.swipe = null;
+    this.pinch = null;
+    this.panDrag = null;
     this.snapshotBeforeGesture = null;
     this.gestureChanged = false;
   }
