@@ -122,8 +122,8 @@ export function drawStroke(
     // is translated in place (lasso move) without allocating new objects.
     const p0 = stroke.points[0];
     const sig = `${ctx.pressureMode}|${simulate ? 1 : 0}|${stroke.points.length}|${
-      p0 ? `${p0.x.toFixed(1)},${p0.y.toFixed(1)}` : ""
-    }`;
+      stroke.size
+    }|${p0 ? `${p0.x.toFixed(1)},${p0.y.toFixed(1)}` : ""}`;
     const hit = pathCache.get(stroke);
     if (hit && hit.sig === sig) {
       path = hit.path;

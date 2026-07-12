@@ -228,6 +228,18 @@ export class CanvasEngine {
   private selectionBBox: { minX: number; minY: number; maxX: number; maxY: number } | null =
     null;
   private strokeMove: { lastX: number; lastY: number; moved: number } | null = null;
+  /**
+   * Corner-handle resize of the selection. Scaling always re-applies to the
+   * geometry captured at gesture start, so wiggling the pointer never
+   * accumulates rounding drift.
+   */
+  private strokeScale: {
+    anchorX: number;
+    anchorY: number;
+    startDist: number;
+    orig: Map<string, { points: StrokePoint[]; size: number }>;
+    origBBox: { minX: number; minY: number; maxX: number; maxY: number };
+  } | null = null;
 
   // Ruler guide
   private ruler: RulerState | null = null;
@@ -608,6 +620,22 @@ export class CanvasEngine {
     this.drawLassoChrome();
   }
 
+  /** Padded selection-bbox corners: NW, NE, SE, SW. */
+  private selectionCorners(b: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  }): Array<[number, number]> {
+    const pad = 10;
+    return [
+      [b.minX - pad, b.minY - pad],
+      [b.maxX + pad, b.minY - pad],
+      [b.maxX + pad, b.maxY + pad],
+      [b.minX - pad, b.maxY + pad],
+    ];
+  }
+
   private drawLassoChrome(): void {
     if (this.host.getTool() !== "lasso") return;
     const c = this.liveCtx;
@@ -636,6 +664,16 @@ export class CanvasEngine {
         b.maxX - b.minX + pad * 2,
         b.maxY - b.minY + pad * 2
       );
+      // Resize handles.
+      c.setLineDash([]);
+      c.fillStyle = "#ffffff";
+      const hs = 7 * px;
+      for (const [hx, hy] of this.selectionCorners(b)) {
+        c.beginPath();
+        c.arc(hx, hy, hs, 0, Math.PI * 2);
+        c.fill();
+        c.stroke();
+      }
     }
     c.restore();
   }
@@ -1288,6 +1326,35 @@ export class CanvasEngine {
       this.activePointerId = e.pointerId;
       this.activePointerType = e.pointerType;
       const b = this.selectionBBox;
+      // Corner handles resize the selection (aspect-preserving, anchored at
+      // the opposite corner).
+      if (b && this.selectedStrokeIds.size > 0) {
+        const grabR = 20 / this.viewScale;
+        const corners = this.selectionCorners(b);
+        for (let c = 0; c < corners.length; c++) {
+          if (Math.hypot(corners[c][0] - pt.x, corners[c][1] - pt.y) <= grabR) {
+            const anchor = corners[(c + 2) % 4];
+            const orig = new Map<string, { points: StrokePoint[]; size: number }>();
+            for (const s of this.page.strokes) {
+              if (!this.selectedStrokeIds.has(s.id)) continue;
+              orig.set(s.id, {
+                points: s.points.map((q) => ({ ...q })),
+                size: s.size,
+              });
+            }
+            this.strokeScale = {
+              anchorX: anchor[0],
+              anchorY: anchor[1],
+              startDist: Math.max(8, Math.hypot(pt.x - anchor[0], pt.y - anchor[1])),
+              orig,
+              origBBox: { ...b },
+            };
+            this.gestureChanged = false;
+            this.snapshotBeforeGesture = this.clonePageSnapshot();
+            return;
+          }
+        }
+      }
       const inSelection =
         b &&
         pt.x >= b.minX - 12 &&
@@ -1650,6 +1717,33 @@ export class CanvasEngine {
       return;
     }
 
+    if (this.strokeScale) {
+      const g = this.strokeScale;
+      const pt = this.toPage(e);
+      let s = Math.hypot(pt.x - g.anchorX, pt.y - g.anchorY) / g.startDist;
+      s = Math.max(0.2, Math.min(5, s));
+      for (const stroke of this.page.strokes) {
+        const o = g.orig.get(stroke.id);
+        if (!o) continue;
+        stroke.size = o.size * s;
+        stroke.points = o.points.map((q) => ({
+          x: g.anchorX + (q.x - g.anchorX) * s,
+          y: g.anchorY + (q.y - g.anchorY) * s,
+          p: q.p,
+        }));
+      }
+      const ob = g.origBBox;
+      this.selectionBBox = {
+        minX: g.anchorX + (ob.minX - g.anchorX) * s,
+        minY: g.anchorY + (ob.minY - g.anchorY) * s,
+        maxX: g.anchorX + (ob.maxX - g.anchorX) * s,
+        maxY: g.anchorY + (ob.maxY - g.anchorY) * s,
+      };
+      if (Math.abs(s - 1) > 0.01) this.gestureChanged = true;
+      this.queueRedraw();
+      return;
+    }
+
     if (this.strokeMove) {
       const pt = this.toPage(e);
       const dx = pt.x - this.strokeMove.lastX;
@@ -1842,6 +1936,15 @@ export class CanvasEngine {
       return;
     }
 
+    if (this.strokeScale) {
+      // Normalise the bbox (a mirror-drag can invert min/max).
+      this.strokeScale = null;
+      this.updateSelectionBBox();
+      this.drawLive();
+      this.finishGesture();
+      return;
+    }
+
     if (this.strokeMove) {
       this.strokeMove = null;
       this.finishGesture();
@@ -1906,6 +2009,7 @@ export class CanvasEngine {
     this.activePointerId = null;
     this.lassoPath = null;
     this.strokeMove = null;
+    this.strokeScale = null;
     this.activePointerType = null;
     this.current = null;
     this.erasing = false;
