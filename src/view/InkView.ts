@@ -1,7 +1,6 @@
 import {
   TextFileView,
   WorkspaceLeaf,
-  setIcon,
   Menu,
   Modal,
   Notice,
@@ -9,6 +8,7 @@ import {
   Setting,
   App,
 } from "obsidian";
+import { setToolIcon } from "./icons";
 import type InkStudioPlugin from "../main";
 import {
   CanvasTool,
@@ -312,7 +312,7 @@ export class InkView extends TextFileView implements EngineHost {
         cls: "ink-tb-btn ink-tool-btn",
         attr: { "aria-label": TOOL_LABELS[tool], title: TOOL_LABELS[tool] },
       });
-      setIcon(btn, STROKE_TOOL_ICONS[tool]);
+      setToolIcon(btn, STROKE_TOOL_ICONS[tool]);
       btn.onclick = () => {
         if (this.currentTool === tool) {
           this.penPanel?.toggle(btn, tool);
@@ -328,7 +328,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn ink-tool-btn",
       attr: { "aria-label": "Select", title: "Select / move images & stickers" },
     });
-    setIcon(selectBtn, "mouse-pointer");
+    setToolIcon(selectBtn, "mouse-pointer");
     selectBtn.onclick = () => this.selectTool("select");
     this.toolButtons.set("select", selectBtn);
 
@@ -337,7 +337,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn ink-tool-btn",
       attr: { "aria-label": "Shapes", title: "Shapes (drag on the page)" },
     });
-    setIcon(this.shapeBtn, "shapes");
+    setToolIcon(this.shapeBtn, "shapes");
     this.shapeBtn.onclick = (e) => {
       const menu = new Menu();
       (Object.keys(SHAPE_ICONS) as Array<Exclude<ShapeKind, "table">>).forEach((kind) => {
@@ -374,7 +374,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Ruler", title: "Ruler (strokes near its edge snap straight)" },
     });
-    setIcon(this.rulerBtn, "ruler");
+    setToolIcon(this.rulerBtn, "ruler");
     this.rulerBtn.onclick = () => {
       this.engine.toggleRuler();
       this.rulerBtn.toggleClass("is-active", this.engine.hasRuler());
@@ -385,14 +385,14 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Stickers", title: "Insert sticker/emoji" },
     });
-    setIcon(stickerBtn, "smile");
+    setToolIcon(stickerBtn, "smile");
     stickerBtn.onclick = () => this.stickerPicker?.toggle(stickerBtn);
 
     this.deleteImageBtn = toolsGroup.createEl("button", {
       cls: "ink-tb-btn ink-delete-image mod-warning",
       attr: { "aria-label": "Delete selected item", title: "Delete selected item" },
     });
-    setIcon(this.deleteImageBtn, "trash-2");
+    setToolIcon(this.deleteImageBtn, "trash-2");
     this.deleteImageBtn.onclick = () => this.engine.deleteSelectedImage();
     this.deleteImageBtn.hide();
 
@@ -431,14 +431,14 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Undo", title: "Undo (Ctrl/Cmd+Z)" },
     });
-    setIcon(this.undoBtn, "undo-2");
+    setToolIcon(this.undoBtn, "undo-2");
     this.undoBtn.onclick = () => this.engine.undo();
 
     this.redoBtn = actions.createEl("button", {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Redo", title: "Redo (Shift+Ctrl/Cmd+Z)" },
     });
-    setIcon(this.redoBtn, "redo-2");
+    setToolIcon(this.redoBtn, "redo-2");
     this.redoBtn.onclick = () => this.engine.redo();
 
     // Page navigation
@@ -447,7 +447,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Previous page", title: "Previous page" },
     });
-    setIcon(this.prevBtn, "chevron-left");
+    setToolIcon(this.prevBtn, "chevron-left");
     this.prevBtn.onclick = () => this.engine.goToPage(this.engine.getPageIndex() - 1);
 
     this.pageIndicator = pageGroup.createSpan({
@@ -459,7 +459,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Next page", title: "Next page" },
     });
-    setIcon(this.nextBtn, "chevron-right");
+    setToolIcon(this.nextBtn, "chevron-right");
     this.nextBtn.onclick = () => this.engine.goToPage(this.engine.getPageIndex() + 1);
 
     // Add page: pick the paper (template) upfront, before writing.
@@ -467,7 +467,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Add page", title: "Add page (choose paper)" },
     });
-    setIcon(addPageBtn, "plus");
+    setToolIcon(addPageBtn, "plus");
     const TEMPLATE_MENU_ICONS: Record<TemplateKind, string> = {
       blank: "file",
       grid: "grid-3x3",
@@ -516,7 +516,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Page template", title: "Paper style for this page" },
     });
-    setIcon(templateBtn, "layout-template");
+    setToolIcon(templateBtn, "layout-template");
     templateBtn.onclick = () => {
       new TemplateModal(this.app, this.engine.getPageTemplate(), (t, asDefault) =>
         this.engine.setPageTemplate(t, asDefault)
@@ -527,7 +527,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Page overview", title: "Show/hide page overview" },
     });
-    setIcon(stripBtn, "layout-grid");
+    setToolIcon(stripBtn, "layout-grid");
     stripBtn.onclick = () => {
       const strip = this.strip;
       if (!strip) return;
@@ -541,7 +541,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Import PDF", title: "Import PDF to annotate" },
     });
-    setIcon(pdfBtn, "file-plus");
+    setToolIcon(pdfBtn, "file-plus");
     pdfBtn.onclick = (e) => {
       const menu = new Menu();
       menu.addItem((i) =>
@@ -563,7 +563,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Insert image", title: "Insert image" },
     });
-    setIcon(imgBtn, "image-plus");
+    setToolIcon(imgBtn, "image-plus");
     imgBtn.onclick = (e) => {
       const menu = new Menu();
       menu.addItem((i) =>
@@ -594,7 +594,7 @@ export class InkView extends TextFileView implements EngineHost {
       cls: "ink-tb-btn",
       attr: { "aria-label": "More actions", title: "More actions" },
     });
-    setIcon(moreBtn, "more-vertical");
+    setToolIcon(moreBtn, "more-vertical");
     moreBtn.onclick = (e) => {
       const menu = new Menu();
       menu.addItem((i) =>
@@ -628,7 +628,7 @@ export class InkView extends TextFileView implements EngineHost {
         cls: "ink-preset-chip",
         attr: { title: "Saved pen (long-press to remove)" },
       });
-      setIcon(chip, "pen");
+      setToolIcon(chip, "pen");
       chip.style.color = preset.color;
       chip.style.borderColor = preset.color;
 

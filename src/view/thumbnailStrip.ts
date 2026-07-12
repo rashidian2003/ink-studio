@@ -1,4 +1,5 @@
-import { Menu, setIcon } from "obsidian";
+import { Menu } from "obsidian";
+import { setToolIcon } from "./icons";
 import type { InkPage, PressureMode } from "../types";
 import { renderPageToCanvas } from "../canvas/pageRender";
 
@@ -72,7 +73,7 @@ export class ThumbnailStrip {
       item.createDiv({ cls: "ink-thumb-label", text: String(index + 1) });
 
       const menuBtn = item.createDiv({ cls: "ink-thumb-menu" });
-      setIcon(menuBtn, "more-vertical");
+      setToolIcon(menuBtn, "more-vertical");
       menuBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
       menuBtn.addEventListener("click", (e) => {
         e.stopPropagation();

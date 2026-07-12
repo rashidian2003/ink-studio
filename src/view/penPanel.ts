@@ -1,4 +1,4 @@
-import { setIcon } from "obsidian";
+import { setToolIcon } from "./icons";
 import type { NibStyle, Stroke, ToolType } from "../types";
 import { makeId } from "../types";
 import {
@@ -97,7 +97,7 @@ export class PenPanel {
           cls: "ink-tb-btn ink-nib-btn",
           attr: { title: NIB_LABELS[nib], "aria-label": NIB_LABELS[nib] },
         });
-        setIcon(btn, NIB_ICONS[nib]);
+        setToolIcon(btn, NIB_ICONS[nib]);
         btn.toggleClass("is-active", cfg.nib === nib);
         btn.onclick = () => {
           cfg.nib = nib;
@@ -172,7 +172,7 @@ export class PenPanel {
         cls: "ink-swatch ink-swatch-add",
         attr: { title: "Add custom colour", "aria-label": "Add custom colour" },
       });
-      setIcon(addColor, "plus");
+      setToolIcon(addColor, "plus");
       const hidden = swatchRow.createEl("input", {
         attr: { type: "color" },
         cls: "ink-hidden-color-input",

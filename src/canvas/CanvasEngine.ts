@@ -206,6 +206,19 @@ export class CanvasEngine {
     this.baseCtx = this.base.getContext("2d")!;
     this.liveCtx = this.live.getContext("2d")!;
 
+    // Inline (not just stylesheet) so gesture blocking survives any CSS
+    // loading/specificity quirk — this is what keeps Android WebView from
+    // turning pen/touch drags into scrolling.
+    for (const el of [container, this.wrapper, this.base, this.live]) {
+      el.style.touchAction = "none";
+      el.style.userSelect = "none";
+      (el.style as CSSStyleDeclaration & { webkitUserSelect: string }).webkitUserSelect =
+        "none";
+      (
+        el.style as CSSStyleDeclaration & { webkitTapHighlightColor: string }
+      ).webkitTapHighlightColor = "transparent";
+    }
+
     const add = (t: string, fn: EventListener) => {
       this.live.addEventListener(t, fn, { passive: false });
       this.boundHandlers.push([t, fn]);
@@ -221,6 +234,12 @@ export class CanvasEngine {
     // pointerleave end-trigger would truncate strokes drawn to the margin.
     // Stop the browser hijacking pen/touch for scrolling or context menus.
     add("contextmenu", ((e: Event) => e.preventDefault()) as EventListener);
+    // Belt & suspenders for Android WebViews that cancel pen pointer streams
+    // to run native scroll/zoom even with touch-action: none — preventing the
+    // compatibility touch events' default stops that pipeline outright, while
+    // pointer events keep flowing normally.
+    add("touchstart", ((e: Event) => e.preventDefault()) as EventListener);
+    add("touchmove", ((e: Event) => e.preventDefault()) as EventListener);
 
     this.resizeObserver = new ResizeObserver(() => this.layout());
     this.resizeObserver.observe(container);
@@ -727,7 +746,47 @@ export class CanvasEngine {
     return false;
   }
 
+  // The three pointer handlers are wrapped so a single unexpected exception
+  // can't leave input permanently dead (it would otherwise strand
+  // activePointerId and swallow every later event) — and so failures on
+  // devices we can't debug directly at least land in the console.
   private onPointerDown = (e: PointerEvent): void => {
+    try {
+      this.handlePointerDown(e);
+    } catch (err) {
+      console.error("Ink Studio: pointerdown failed", err);
+      this.cancelActiveGesture();
+    }
+  };
+
+  private onPointerMove = (e: PointerEvent): void => {
+    try {
+      this.handlePointerMove(e);
+    } catch (err) {
+      console.error("Ink Studio: pointermove failed", err);
+      this.cancelActiveGesture();
+    }
+  };
+
+  private onPointerUp = (e: PointerEvent): void => {
+    try {
+      this.handlePointerUp(e);
+    } catch (err) {
+      console.error("Ink Studio: pointerup failed", err);
+      this.cancelActiveGesture();
+    }
+  };
+
+  /** setPointerCapture can throw on exotic WebViews; drawing must survive it. */
+  private capturePointer(e: PointerEvent): void {
+    try {
+      this.capturePointer(e);
+    } catch (err) {
+      console.error("Ink Studio: pointer capture failed", err);
+    }
+  }
+
+  private handlePointerDown(e: PointerEvent): void {
     if (e.pointerType === "pen") {
       this.penEverUsed = true;
       this.penLastSeen = Date.now();
@@ -748,7 +807,7 @@ export class CanvasEngine {
       const hit = this.rulerHit(pt.x, pt.y);
       if (hit) {
         e.preventDefault();
-        this.live.setPointerCapture(e.pointerId);
+        this.capturePointer(e);
         this.activePointerId = e.pointerId;
         this.rulerGesture = { mode: hit, px: pt.x, py: pt.y, start: { ...this.ruler } };
         return;
@@ -765,7 +824,7 @@ export class CanvasEngine {
 
     if (tool === "shape" && this.isDrawInput(e)) {
       e.preventDefault();
-      this.live.setPointerCapture(e.pointerId);
+      this.capturePointer(e);
       this.activePointerId = e.pointerId;
       this.gestureChanged = false;
       this.snapshotBeforeGesture = this.clonePageSnapshot();
@@ -783,7 +842,7 @@ export class CanvasEngine {
     if (e.pointerType === "touch") {
       this.swipe = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now() };
     }
-  };
+  }
 
   private beginSelectGesture(e: PointerEvent): boolean {
     const pt = this.toPage(e);
@@ -832,7 +891,7 @@ export class CanvasEngine {
 
   private startImageGesture(e: PointerEvent, gesture: ImageGesture): void {
     e.preventDefault();
-    this.live.setPointerCapture(e.pointerId);
+    this.capturePointer(e);
     this.activePointerId = e.pointerId;
     this.imageGesture = gesture;
     this.gestureChanged = false;
@@ -841,7 +900,7 @@ export class CanvasEngine {
 
   private beginStroke(e: PointerEvent, tool: ToolType): void {
     e.preventDefault();
-    this.live.setPointerCapture(e.pointerId);
+    this.capturePointer(e);
     this.activePointerId = e.pointerId;
     this.simulate = e.pointerType !== "pen";
     this.gestureChanged = false;
@@ -908,7 +967,7 @@ export class CanvasEngine {
     return pt;
   }
 
-  private onPointerMove = (e: PointerEvent): void => {
+  private handlePointerMove(e: PointerEvent): void {
     if (e.pointerType === "pen") this.penLastSeen = Date.now();
     if (e.pointerId !== this.activePointerId) return;
     e.preventDefault();
@@ -954,7 +1013,7 @@ export class CanvasEngine {
       );
     }
     this.drawLive();
-  };
+  }
 
   private updateRulerGesture(e: PointerEvent): void {
     const g = this.rulerGesture!;
@@ -1006,7 +1065,7 @@ export class CanvasEngine {
     this.drawLive();
   }
 
-  private onPointerUp = (e: PointerEvent): void => {
+  private handlePointerUp(e: PointerEvent): void {
     // Swipe-to-flip pages: a quick, mostly-horizontal single-finger flick.
     // Guarded against palms: never while inking, and not shortly after any
     // pen contact (a resting palm lingers; a deliberate flick is fast).
@@ -1087,7 +1146,7 @@ export class CanvasEngine {
       this.drawLive();
     }
     this.finishGesture();
-  };
+  }
 
   private cancelActiveGesture(): void {
     this.activePointerId = null;

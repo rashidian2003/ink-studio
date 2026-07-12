@@ -67,6 +67,15 @@
   pointer-events: none;
 }
 
+/* Bundled inline icons: explicit size so they render on every platform,
+   independent of Obsidian's own .svg-icon rules. */
+.ink-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
 /* ---- Colour swatches ---- */
 .ink-swatches {
   gap: 4px;
