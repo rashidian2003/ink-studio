@@ -11,6 +11,10 @@ export interface TidyOptions {
   normalizeHeight: boolean;
   fixSpacing: boolean;
   smooth: boolean;
+  /** Shear every line to one consistent, slightly-forward slant. */
+  uniformSlant: boolean;
+  /** Re-profile pressure: heavy downstrokes, light upstrokes (nib-pen look). */
+  calligraphy: boolean;
 }
 
 export const DEFAULT_TIDY: TidyOptions = {
@@ -18,7 +22,12 @@ export const DEFAULT_TIDY: TidyOptions = {
   normalizeHeight: true,
   fixSpacing: true,
   smooth: true,
+  uniformSlant: true,
+  calligraphy: true,
 };
+
+/** Target slant: dx per dy (y-down). Slightly forward reads as elegant. */
+const TARGET_SLANT = -0.14;
 
 interface BBox {
   minX: number;
@@ -174,6 +183,63 @@ function fixSpacing(line: Stroke[]): void {
   }
 }
 
+/**
+ * Uniform slant: measure the line's dominant letter slant from near-vertical
+ * segments (least-squares of dx on dy), then shear every point so all letters
+ * lean at the same slightly-forward angle. This is the single change that
+ * makes handwriting read as "calligraphic" instead of wobbly.
+ */
+function uniformSlant(line: Stroke[]): void {
+  let sumDxDy = 0;
+  let sumDyDy = 0;
+  for (const s of line) {
+    for (let i = 1; i < s.points.length; i++) {
+      const dx = s.points[i].x - s.points[i - 1].x;
+      const dy = s.points[i].y - s.points[i - 1].y;
+      // Only near-vertical movement carries slant information.
+      if (Math.abs(dy) > 1.6 * Math.abs(dx) && Math.abs(dy) > 2) {
+        sumDxDy += dx * dy;
+        sumDyDy += dy * dy;
+      }
+    }
+  }
+  if (sumDyDy < 1) return;
+  const measured = sumDxDy / sumDyDy;
+  const correction = TARGET_SLANT - measured;
+  // Guard: extreme corrections mean the estimate is untrustworthy.
+  if (!isFinite(correction) || Math.abs(correction) > 0.6) return;
+
+  const bottoms = line.map(strokeBottom);
+  const yRef = median(bottoms);
+  for (const s of line) {
+    for (const p of s.points) {
+      p.x += (p.y - yRef) * correction;
+    }
+  }
+}
+
+/**
+ * Calligraphy ink: recompute each point's pressure from local stroke
+ * direction — downstrokes press hard, upstrokes glide — and raise the
+ * stroke's pressure→width mapping so the renderer shows it. Pure styling:
+ * geometry is untouched.
+ */
+function calligraphyInk(s: Stroke): void {
+  const pts = s.points;
+  if (pts.length < 3) return;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(pts.length - 1, i + 1)];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const down = Math.max(0, dy / len); // y grows downwards
+    pts[i].p = 0.38 + 0.5 * down;
+  }
+  s.thin = Math.max(s.thin ?? 0.55, 0.68);
+  s.sim = false; // pressure is now authored, never simulated away
+}
+
 // --- Step 4: corner-preserving smoothing ------------------------------------
 
 /** Ramer-Douglas-Peucker simplification; keeps high-curvature points. */
@@ -258,9 +324,14 @@ export function tidyStrokes(strokes: Stroke[], opts: TidyOptions): Stroke[] {
     if (opts.alignBaseline) alignBaseline(line);
     if (opts.normalizeHeight) normalizeHeight(line);
     if (opts.fixSpacing) fixSpacing(line);
+    if (opts.uniformSlant) uniformSlant(line);
   }
   if (opts.smooth) {
     for (const s of copy) smoothStroke(s);
+  }
+  // Pressure re-profiling runs last so it sees the final geometry.
+  if (opts.calligraphy) {
+    for (const s of copy) calligraphyInk(s);
   }
   return copy;
 }

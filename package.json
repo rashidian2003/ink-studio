@@ -1,6 +1,6 @@
 {
   "name": "ink-studio",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Obsidian plugin: handwriting/stylus note-taking with pressure-sensitive vector ink, built for Android tablets with a stylus.",
   "main": "main.js",
   "scripts": {
@@ -26,6 +26,7 @@
     "@types/node": "^20.19.43",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.21.5",
+    "hersheytext": "^2.0.0",
     "lucide-static": "^1.24.0",
     "obsidian": "^1.13.1",
     "tslib": "^2.8.1",

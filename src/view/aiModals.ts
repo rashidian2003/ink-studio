@@ -1,7 +1,12 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Notice, Setting } from "obsidian";
 import type { Stroke } from "../types";
 import { DEFAULT_TIDY, TidyOptions, tidyStrokes, strokeBBox } from "../canvas/tidy";
 import { drawStroke } from "../canvas/strokeRender";
+import {
+  textToCalligraphyStrokes,
+  UnsupportedScriptError,
+  CalligraphyOptions,
+} from "../ai/calligraphy";
 
 // Dialogs for the two AI-handwriting actions. Both preview before applying:
 // OCR shows the recognized (editable) text; Tidy shows before/after renders.
@@ -57,7 +62,7 @@ export class OcrResultModal extends Modal {
 }
 
 /** Render a stroke group into a preview canvas, cropped to its bounding box. */
-function renderStrokesPreview(
+export function renderStrokesPreview(
   canvas: HTMLCanvasElement,
   strokes: Stroke[],
   cssWidth: number
@@ -89,6 +94,119 @@ function renderStrokesPreview(
   ctx.setTransform(scale * dpr, 0, 0, scale * dpr, (pad - minX) * scale * dpr, (pad - minY) * scale * dpr);
   for (const s of strokes) {
     drawStroke(ctx, s, { pressureMode: "natural" }, !!s.sim);
+  }
+}
+
+/**
+ * "Rewrite as calligraphy": the OCR'd text (editable) is re-rendered as
+ * genuine cursive ink strokes — still handwriting on the page, not a text
+ * box. Live preview of the generated ink; Apply swaps it in as one undo step.
+ */
+export class CalligraphyModal extends Modal {
+  private text: string;
+  private layout: Omit<CalligraphyOptions, "maxWidth"> & { maxWidth: number };
+  private previewCanvas!: HTMLCanvasElement;
+  private repaintTimer: number | null = null;
+  private onApply: (strokes: Stroke[]) => void;
+
+  constructor(
+    app: App,
+    text: string,
+    layout: CalligraphyOptions,
+    onApply: (strokes: Stroke[]) => void
+  ) {
+    super(app);
+    this.text = text;
+    this.layout = layout;
+    this.onApply = onApply;
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Rewrite as calligraphy");
+    const { contentEl } = this;
+
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Your handwriting is transcribed, then written back as flowing cursive ink — still pen strokes on the page, not typed text. Check the transcription, adjust the size, and apply. One undo restores the original.",
+    });
+
+    const area = contentEl.createEl("textarea", {
+      cls: "ink-text-modal-area",
+      attr: { rows: "4" },
+    }) as HTMLTextAreaElement;
+    area.value = this.text;
+    area.oninput = () => {
+      this.text = area.value;
+      this.queueRepaint();
+    };
+
+    const previewWrap = contentEl.createDiv({ cls: "ink-tidy-preview" });
+    previewWrap.createDiv({ cls: "ink-tidy-label", text: "Preview" });
+    this.previewCanvas = previewWrap.createEl("canvas");
+
+    new Setting(contentEl).setName("Writing size").addSlider((s) =>
+      s
+        .setLimits(24, 120, 2)
+        .setValue(this.layout.size)
+        .setDynamicTooltip()
+        .onChange((v) => {
+          this.layout.size = v;
+          this.queueRepaint();
+        })
+    );
+
+    new Setting(contentEl).addButton((b) =>
+      b
+        .setButtonText("Apply")
+        .setCta()
+        .onClick(() => {
+          const strokes = this.generate();
+          if (strokes) {
+            this.onApply(strokes);
+            this.close();
+          }
+        })
+    );
+
+    this.repaint();
+  }
+
+  private generate(): Stroke[] | null {
+    try {
+      const strokes = textToCalligraphyStrokes(this.text.trim(), this.layout);
+      return strokes.length ? strokes : null;
+    } catch (e) {
+      if (e instanceof UnsupportedScriptError) {
+        new Notice(
+          "Ink Studio: calligraphy rewrite covers Latin scripts (German/English). For Persian handwriting use “Tidy up handwriting” instead."
+        );
+      } else {
+        console.error("Ink Studio: calligraphy generation failed", e);
+      }
+      return null;
+    }
+  }
+
+  private queueRepaint(): void {
+    if (this.repaintTimer !== null) window.clearTimeout(this.repaintTimer);
+    this.repaintTimer = window.setTimeout(() => {
+      this.repaintTimer = null;
+      this.repaint();
+    }, 250);
+  }
+
+  private repaint(): void {
+    try {
+      const strokes = textToCalligraphyStrokes(this.text.trim(), this.layout);
+      if (strokes.length) renderStrokesPreview(this.previewCanvas, strokes, 480);
+    } catch {
+      /* unsupported script — Apply will surface the message */
+    }
+  }
+
+  onClose(): void {
+    if (this.repaintTimer !== null) window.clearTimeout(this.repaintTimer);
+    this.contentEl.empty();
   }
 }
 
@@ -135,6 +253,8 @@ export class TidyModal extends Modal {
       ["normalizeHeight", "Normalize size"],
       ["fixSpacing", "Fix spacing"],
       ["smooth", "Smooth strokes"],
+      ["uniformSlant", "Uniform slant"],
+      ["calligraphy", "Calligraphy ink"],
     ];
     for (const [key, label] of toggles) {
       new Setting(contentEl).setName(label).addToggle((t) =>

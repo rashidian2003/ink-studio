@@ -35,7 +35,7 @@ import { PenPanel } from "./penPanel";
 import { StickerPicker } from "./stickerPicker";
 import { TemplateModal } from "./templateModal";
 import { TextBoxModal } from "./textModal";
-import { OcrResultModal, TidyModal } from "./aiModals";
+import { CalligraphyModal, OcrResultModal, TidyModal } from "./aiModals";
 import type { PenConfig, PenPreset } from "../settings";
 import {
   buildPdfPages,
@@ -619,6 +619,12 @@ export class InkView extends TextFileView implements EngineHost {
       );
       menu.addItem((i) =>
         i
+          .setTitle("Rewrite as calligraphy (AI)…")
+          .setIcon("feather")
+          .onClick(() => void this.calligraphyFlow())
+      );
+      menu.addItem((i) =>
+        i
           .setTitle("Tidy up handwriting…")
           .setIcon("wand-2")
           .onClick(() => this.tidyHandwritingFlow())
@@ -1060,6 +1066,78 @@ export class InkView extends TextFileView implements EngineHost {
     } catch (e) {
       notice.hide();
       console.error("Ink Studio: OCR failed", e);
+      new Notice(
+        e instanceof GeminiError
+          ? `Ink Studio: ${e.message}`
+          : "Ink Studio: handwriting recognition failed. See console for details."
+      );
+    }
+  }
+
+  /**
+   * OCR the page, then re-render the text as flowing cursive ink strokes —
+   * "professional handwriting" that is still ink, not a text box.
+   */
+  private async calligraphyFlow(): Promise<void> {
+    const page = this.doc.pages[this.engine.getPageIndex()];
+    if (page.strokes.length === 0) {
+      new Notice("Ink Studio: there is no handwriting on this page.");
+      return;
+    }
+    if (!this.geminiKey()) {
+      new Notice(
+        "Ink Studio: no Gemini API key. Add one in Settings → Ink Studio (or install AI Flashcard Studio with a key)."
+      );
+      return;
+    }
+
+    const notice = new Notice("Ink Studio: reading your handwriting…", 0);
+    try {
+      const inkOnly = { ...page, bg: undefined, images: [], texts: [] };
+      const canvas = renderPageToCanvas(inkOnly, {
+        width: Math.min(1280, page.width),
+        pressureMode: this.plugin.settings.pressureMode,
+        includeBackground: true,
+        includeTemplate: false,
+        resolveBackground: () => null,
+        resolveImage: () => null,
+      });
+      const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
+      const text = await transcribeHandwriting(
+        this.geminiKey(),
+        this.plugin.settings.geminiModel,
+        base64
+      );
+      notice.hide();
+
+      // Lay the rewritten ink where the original writing starts.
+      const x = Math.max(
+        40,
+        Math.min(...page.strokes.map((s) => Math.min(...s.points.map((p) => p.x))))
+      );
+      const y = Math.max(
+        40,
+        Math.min(...page.strokes.map((s) => Math.min(...s.points.map((p) => p.y))))
+      );
+      new CalligraphyModal(
+        this.app,
+        text,
+        {
+          x,
+          y,
+          size: this.estimateTextSize(),
+          color: this.currentColor,
+          strokeSize: Math.max(3, this.plugin.settings.toolSizes.pen),
+          maxWidth: page.width - x - 60,
+        },
+        (strokes) => {
+          this.engine.replacePageStrokes(strokes);
+          new Notice("Ink Studio: rewritten in calligraphy — undo restores the original.");
+        }
+      ).open();
+    } catch (e) {
+      notice.hide();
+      console.error("Ink Studio: calligraphy flow failed", e);
       new Notice(
         e instanceof GeminiError
           ? `Ink Studio: ${e.message}`
