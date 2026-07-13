@@ -14,26 +14,39 @@
 /* ---- Toolbar ---- */
 .ink-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 3px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
-  /* Keep the toolbar reachable and out of the drawing surface. */
+  /* Keep the toolbar reachable and out of the drawing surface; on a narrow
+     tablet in portrait it scrolls sideways rather than wrapping into a tall
+     block. */
   flex: 0 0 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
   user-select: none;
+}
+
+.ink-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .ink-tb-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
+  flex: 0 0 auto;
 }
 
-.ink-tb-label {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-muted);
+/* Thin divider between logical groups. */
+.ink-tb-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 4px;
+  background: var(--background-modifier-border);
+  flex: 0 0 auto;
 }
 
 /* Big enough to hit with a thumb or stylus on a tablet. */
@@ -41,46 +54,79 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 35px;
+  height: 35px;
   padding: 0;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: var(--background-primary);
-  color: var(--text-normal);
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
+  flex: 0 0 auto;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .ink-tb-btn:hover {
   background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
-.ink-tool-btn.is-active {
-  border-color: var(--interactive-accent);
-  background: var(--background-modifier-hover);
-  color: var(--interactive-accent);
-  box-shadow: 0 0 0 1px var(--interactive-accent) inset;
+.ink-tb-btn:active {
+  transform: scale(0.94);
+}
+
+/* Active tool: filled accent pill — clear and modern. */
+.ink-tool-btn.is-active,
+.ink-tb-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
 }
 
 .ink-tb-btn.is-disabled {
-  opacity: 0.4;
+  opacity: 0.32;
   pointer-events: none;
+}
+
+.ink-delete-image {
+  color: var(--text-error);
 }
 
 /* Bundled inline icons: explicit size so they render on every platform,
    independent of Obsidian's own .svg-icon rules. */
 .ink-icon {
-  width: 20px;
-  height: 20px;
+  width: 19px;
+  height: 19px;
   flex-shrink: 0;
   pointer-events: none;
 }
 
-/* ---- Colour swatches ---- */
-.ink-swatches {
-  gap: 4px;
+/* ---- Colour chip ---- */
+.ink-color-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 35px;
+  height: 35px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  flex: 0 0 auto;
 }
 
+.ink-color-chip:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ink-color-chip-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--background-secondary), 0 0 0 3px var(--background-modifier-border);
+}
+
+/* ---- Colour swatches (shared: popover + pen panel) ---- */
 .ink-swatch {
   width: 28px;
   height: 28px;
@@ -88,6 +134,7 @@
   border: 2px solid var(--background-modifier-border);
   padding: 0;
   cursor: pointer;
+  flex: 0 0 auto;
 }
 
 .ink-swatch.is-active {
@@ -95,26 +142,67 @@
   box-shadow: 0 0 0 2px var(--interactive-accent);
 }
 
-.ink-color-picker {
-  width: 34px;
-  height: 34px;
-  padding: 0;
+/* ---- Colour popover ---- */
+.ink-color-popover {
+  position: absolute;
+  z-index: 30;
+  width: 232px;
+  max-width: calc(100% - 16px);
+  padding: 12px;
+  border-radius: 12px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  background: none;
-  cursor: pointer;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s), 0 10px 30px rgba(0, 0, 0, 0.28);
 }
 
-/* ---- Size slider ---- */
-.ink-size-slider {
-  width: 120px;
+.ink-pop-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ink-pop-label {
+  margin: 12px 0 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ink-pop-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ink-pop-hint {
+  margin-top: 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  line-height: 1.35;
+}
+
+.ink-swatch-add {
+  background: var(--background-secondary) !important;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ink-swatch-add svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ink-hidden-color-input {
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: none;
+  visibility: hidden;
+  position: absolute;
 }
 
 /* ---- Pen presets ("pen box") ---- */
-.ink-preset-bar {
-  gap: 4px;
-}
-
 .ink-preset-chip {
   display: inline-flex;
   align-items: center;
@@ -346,7 +434,8 @@
 }
 
 .ink-page-indicator {
-  min-width: 52px;
+  min-width: 40px;
+  padding: 0 2px;
   text-align: center;
   font-size: var(--font-ui-small);
   color: var(--text-normal);

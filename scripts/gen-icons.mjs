@@ -33,6 +33,7 @@ const ICONS = [
   "type",
   "sparkles",
   "lasso",
+  "circle-plus",
 ];
 
 const entries = ICONS.map((name) => {
