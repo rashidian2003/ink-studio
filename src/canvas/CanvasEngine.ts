@@ -183,6 +183,12 @@ export class CanvasEngine {
   /** Page origin in viewport CSS px (pan offset). */
   private offX = 0;
   private offY = 0;
+  /**
+   * When true the zoom level is frozen: pinch and double-tap no longer
+   * rescale the page (two fingers still pan), so an accidental gesture can't
+   * resize the view you're writing on. Panning and drawing still work.
+   */
+  private zoomLocked = false;
   private resizeObserver: ResizeObserver | null = null;
 
   /** Effective page-units → CSS px scale currently on screen. */
@@ -498,8 +504,17 @@ export class CanvasEngine {
     ctx.setTransform(k, 0, 0, k, this.offX * this.dpr, this.offY * this.dpr);
   }
 
+  isZoomLocked(): boolean {
+    return this.zoomLocked;
+  }
+
+  setZoomLocked(v: boolean): void {
+    this.zoomLocked = v;
+  }
+
   /** Zoom to `targetScale`, keeping the host-point (hx,hy) visually fixed. */
   private setZoomAt(hx: number, hy: number, targetScale: number): void {
+    if (this.zoomLocked) return;
     const s0 = this.viewScale;
     const wx = (hx - this.offX) / s0;
     const wy = (hy - this.offY) / s0;
@@ -512,7 +527,9 @@ export class CanvasEngine {
   }
 
   private resetView(): void {
-    this.zoom = 1;
+    // A locked view keeps its zoom across page switches — that's the point of
+    // locking. clampView (run right after) re-fits the pan to the new page.
+    if (!this.zoomLocked) this.zoom = 1;
     this.pinch = null;
     this.panDrag = null;
   }
@@ -1475,9 +1492,15 @@ export class CanvasEngine {
     const mx = (pts[0].x + pts[1].x) / 2 - rect.left;
     const my = (pts[0].y + pts[1].y) / 2 - rect.top;
     const d = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
-    let s = this.pinch.s0 * (d / this.pinch.d0);
-    s = Math.max(this.fitScale, Math.min(s, this.fitScale * MAX_ZOOM));
-    this.zoom = s / this.fitScale;
+    // When locked, freeze the scale so the fingers only pan (no resize).
+    let s: number;
+    if (this.zoomLocked) {
+      s = this.pinch.s0;
+    } else {
+      s = this.pinch.s0 * (d / this.pinch.d0);
+      s = Math.max(this.fitScale, Math.min(s, this.fitScale * MAX_ZOOM));
+      this.zoom = s / this.fitScale;
+    }
     // The two-finger midpoint stays glued to the same spot on the page, which
     // gives zoom-about-fingers and two-finger panning in one formula.
     this.offX = mx - this.pinch.wx * s;

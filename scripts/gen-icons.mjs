@@ -34,6 +34,8 @@ const ICONS = [
   "sparkles",
   "lasso",
   "circle-plus",
+  "lock",
+  "lock-open",
 ];
 
 const entries = ICONS.map((name) => {

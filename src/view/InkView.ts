@@ -150,6 +150,7 @@ export class InkView extends TextFileView implements EngineHost {
   private redoBtn!: HTMLElement;
   private deleteImageBtn!: HTMLElement;
   private insertBtn!: HTMLElement;
+  private lockBtn!: HTMLElement;
   private prevBtn!: HTMLElement;
   private nextBtn!: HTMLElement;
   private pageIndicator!: HTMLElement;
@@ -448,6 +449,29 @@ export class InkView extends TextFileView implements EngineHost {
     });
     setToolIcon(addPageBtn, "plus");
     addPageBtn.onclick = (e) => this.openAddPageMenu(e);
+
+    // Zoom lock: freeze the current zoom so it can't be resized by accident.
+    this.lockBtn = pageGroup.createEl("button", {
+      cls: "ink-tb-btn",
+      attr: { "aria-label": "Lock zoom", title: "Lock zoom (stop accidental resizing)" },
+    });
+    setToolIcon(this.lockBtn, "lock-open");
+    this.lockBtn.onclick = () => {
+      this.engine.setZoomLocked(!this.engine.isZoomLocked());
+      this.updateLockButton();
+    };
+    this.updateLockButton();
+  }
+
+  private updateLockButton(): void {
+    if (!this.lockBtn) return;
+    const locked = this.engine.isZoomLocked();
+    setToolIcon(this.lockBtn, locked ? "lock" : "lock-open");
+    this.lockBtn.toggleClass("is-active", locked);
+    this.lockBtn.setAttribute(
+      "title",
+      locked ? "Zoom locked — tap to unlock" : "Lock zoom (stop accidental resizing)"
+    );
   }
 
   private toggleOverview(): void {
