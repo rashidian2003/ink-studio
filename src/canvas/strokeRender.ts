@@ -9,6 +9,60 @@ import { PRESSURE_THINNING } from "../settings";
 
 export interface RenderContext {
   pressureMode: PressureMode;
+  /** Dark-paper display mode: ink is lightened, highlighter blend flips. */
+  dark?: boolean;
+}
+
+/**
+ * Adapt an ink colour for dark paper by inverting its HSL lightness while
+ * keeping hue and saturation. Black → near-white, dark blue → light blue,
+ * mid colours (red/orange) barely move so they stay recognisable. This is a
+ * display-only transform — the stored colour is never changed.
+ */
+export function adaptInkColor(hex: string, dark: boolean): string {
+  if (!dark) return hex;
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const rf = r / 255;
+  const gf = g / 255;
+  const bf = b / 255;
+  const max = Math.max(rf, gf, bf);
+  const min = Math.min(rf, gf, bf);
+  let h = 0;
+  const l = (max + min) / 2;
+  const d = max - min;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  if (d !== 0) {
+    if (max === rf) h = ((gf - bf) / d) % 6;
+    else if (max === gf) h = (bf - rf) / d + 2;
+    else h = (rf - gf) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  // Invert lightness, but keep it out of the extremes so colours don't wash
+  // out to pure white/black on the dark page.
+  const nl = Math.max(0.28, Math.min(0.92, 1 - l));
+  const c = (1 - Math.abs(2 * nl - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const mm = nl - c / 2;
+  let rr = 0,
+    gg = 0,
+    bb = 0;
+  if (h < 60) [rr, gg, bb] = [c, x, 0];
+  else if (h < 120) [rr, gg, bb] = [x, c, 0];
+  else if (h < 180) [rr, gg, bb] = [0, c, x];
+  else if (h < 240) [rr, gg, bb] = [0, x, c];
+  else if (h < 300) [rr, gg, bb] = [x, 0, c];
+  else [rr, gg, bb] = [c, 0, x];
+  const to = (v: number) =>
+    Math.round((v + mm) * 255)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${to(rr)}${to(gg)}${to(bb)}`;
 }
 
 /**
@@ -135,13 +189,17 @@ export function drawStroke(
     path = strokePath(stroke, ctx, simulate);
   }
   if (!path) return;
+  const isHighlighter = stroke.tool === "highlighter";
   c2d.save();
-  c2d.fillStyle = stroke.color;
+  c2d.fillStyle = adaptInkColor(stroke.color, !!ctx.dark);
   c2d.globalAlpha = stroke.opacity;
-  // Highlighter should darken where it overlaps other ink but not build up on
-  // itself; "multiply" gives a believable marker look on white pages.
-  c2d.globalCompositeOperation =
-    stroke.tool === "highlighter" ? "multiply" : "source-over";
+  // Highlighter blends with what's under it: "multiply" darkens on light paper,
+  // "screen" lightens on dark paper — either way the marker reads correctly.
+  c2d.globalCompositeOperation = isHighlighter
+    ? ctx.dark
+      ? "screen"
+      : "multiply"
+    : "source-over";
   c2d.fill(path);
   c2d.restore();
 }

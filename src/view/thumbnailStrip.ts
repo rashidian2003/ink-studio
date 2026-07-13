@@ -15,6 +15,7 @@ export interface StripHost {
   getPages(): InkPage[];
   getCurrentIndex(): number;
   getPressureMode(): PressureMode;
+  getDark(): boolean;
   resolveBackground(page: InkPage): CanvasImageSource | null;
   resolveImage(path: string): CanvasImageSource | null;
   onSelect(index: number): void;
@@ -63,6 +64,7 @@ export class ThumbnailStrip {
         pressureMode: this.host.getPressureMode(),
         includeBackground: true,
         includeTemplate: true,
+        dark: this.host.getDark(),
         resolveBackground: (p) => this.host.resolveBackground(p),
         resolveImage: (p) => this.host.resolveImage(p),
       });

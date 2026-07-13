@@ -1,6 +1,10 @@
 import type { InkImage, InkPage, InkText, PressureMode } from "../types";
-import { drawStroke } from "./strokeRender";
+import { adaptInkColor, drawStroke } from "./strokeRender";
 import { drawTemplate } from "./templates";
+
+/** Paper colours. Dark paper is a comfort-mode display, not stored data. */
+export const LIGHT_PAPER = "#ffffff";
+export const DARK_PAPER = "#242424";
 
 /** Font stack used for typed text boxes (canvas needs concrete families). */
 export function textFont(size: number): string {
@@ -10,10 +14,10 @@ export function textFont(size: number): string {
 const LINE_HEIGHT = 1.32;
 
 /** Draw a text box (multi-line via \n), anchored at its top-left. */
-export function drawTextBox(ctx: CanvasRenderingContext2D, t: InkText): void {
+export function drawTextBox(ctx: CanvasRenderingContext2D, t: InkText, dark = false): void {
   ctx.save();
   ctx.font = textFont(t.size);
-  ctx.fillStyle = t.color;
+  ctx.fillStyle = adaptInkColor(t.color, dark);
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
   const lines = t.text.split("\n");
@@ -62,6 +66,8 @@ export interface PageRenderOptions {
   includeBackground: boolean;
   /** Draw the paper template (grid/lined/dotted). Export can exclude it. */
   includeTemplate: boolean;
+  /** Dark comfort mode: dark paper + lightened ink (view + thumbnails only). */
+  dark?: boolean;
   resolveBackground: (page: InkPage) => CanvasImageSource | null;
   resolveImage: (path: string) => CanvasImageSource | null;
 }
@@ -77,8 +83,10 @@ export function renderPageToCanvas(
   const ctx = canvas.getContext("2d")!;
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
+  const dark = !!opts.dark;
   if (opts.includeBackground) {
-    ctx.fillStyle = "#ffffff";
+    // A PDF page keeps its own light background even in dark mode.
+    ctx.fillStyle = dark && !page.bg ? DARK_PAPER : LIGHT_PAPER;
     ctx.fillRect(0, 0, page.width, page.height);
     if (page.bg) {
       const bg = opts.resolveBackground(page);
@@ -86,7 +94,7 @@ export function renderPageToCanvas(
     }
   }
   if (opts.includeTemplate && !page.bg && page.template) {
-    drawTemplate(ctx, page.template, page.width, page.height);
+    drawTemplate(ctx, page.template, page.width, page.height, dark);
   }
 
   for (const img of page.images) {
@@ -99,10 +107,10 @@ export function renderPageToCanvas(
   }
 
   for (const t of page.texts ?? []) {
-    drawTextBox(ctx, t);
+    drawTextBox(ctx, t, dark);
   }
 
-  const rc = { pressureMode: opts.pressureMode };
+  const rc = { pressureMode: opts.pressureMode, dark };
   for (const stroke of page.strokes) {
     drawStroke(ctx, stroke, rc, !!stroke.sim, true);
   }

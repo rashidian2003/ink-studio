@@ -20,6 +20,11 @@ const GRID_COLOR = "#c9d8ea";
 const LINE_COLOR = "#b9cce4";
 const DOT_COLOR = "#a9b8cc";
 
+// On dark paper the pattern is drawn with a faint light colour instead.
+const DARK_GRID_COLOR = "rgba(150, 170, 200, 0.22)";
+const DARK_LINE_COLOR = "rgba(150, 170, 200, 0.26)";
+const DARK_DOT_COLOR = "rgba(160, 180, 210, 0.3)";
+
 export const TEMPLATE_LABELS: Record<TemplateKind, string> = {
   blank: "Blank",
   grid: "Grid",
@@ -37,14 +42,15 @@ export function drawTemplate(
   ctx: CanvasRenderingContext2D,
   template: PageTemplate,
   width: number,
-  height: number
+  height: number,
+  dark = false
 ): void {
   if (template.kind === "blank") return;
   ctx.save();
 
   if (template.kind === "grid") {
     const s = GRID_SPACING[template.spacing];
-    ctx.strokeStyle = GRID_COLOR;
+    ctx.strokeStyle = dark ? DARK_GRID_COLOR : GRID_COLOR;
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (let x = s; x < width; x += s) {
@@ -59,7 +65,7 @@ export function drawTemplate(
   } else if (template.kind === "lined") {
     const s = LINE_SPACING[template.spacing];
     const topMargin = s * 1.5;
-    ctx.strokeStyle = LINE_COLOR;
+    ctx.strokeStyle = dark ? DARK_LINE_COLOR : LINE_COLOR;
     ctx.lineWidth = 1.4;
     ctx.beginPath();
     for (let y = topMargin; y < height - s * 0.4; y += s) {
@@ -69,7 +75,7 @@ export function drawTemplate(
     ctx.stroke();
   } else if (template.kind === "dotted") {
     const s = GRID_SPACING[template.spacing];
-    ctx.fillStyle = DOT_COLOR;
+    ctx.fillStyle = dark ? DARK_DOT_COLOR : DOT_COLOR;
     for (let x = s; x < width; x += s) {
       for (let y = s; y < height; y += s) {
         ctx.beginPath();

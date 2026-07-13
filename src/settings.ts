@@ -53,6 +53,12 @@ export interface InkStudioSettings {
   geminiApiKey: string;
   /** Gemini model id used for OCR. */
   geminiModel: string;
+  /**
+   * Paper appearance. "auto" follows Obsidian's own light/dark theme; the
+   * others force it. Dark paper is a display-only comfort mode — stored ink
+   * colours and PDF export are unaffected.
+   */
+  paperTheme: "auto" | "light" | "dark";
 }
 
 export const DEFAULT_SETTINGS: InkStudioSettings = {
@@ -75,6 +81,7 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
   lastTool: "pen",
   geminiApiKey: "",
   geminiModel: "gemini-2.0-flash",
+  paperTheme: "auto",
 };
 
 /** Maps the legacy pressure mode to perfect-freehand's `thinning` parameter. */
@@ -128,6 +135,22 @@ export class InkStudioSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         })
+      );
+
+    new Setting(containerEl)
+      .setName("Paper")
+      .setDesc(
+        "Dark paper is a night-writing comfort mode: the page turns dark and your ink is shown lighter so it stays visible. Your saved colours and PDF exports are unchanged."
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({ auto: "Auto (follow Obsidian)", light: "Light", dark: "Dark" })
+          .setValue(this.plugin.settings.paperTheme)
+          .onChange(async (v) => {
+            this.plugin.settings.paperTheme = v as "auto" | "light" | "dark";
+            await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
+          })
       );
 
     containerEl.createEl("h3", { text: "AI handwriting (Gemini)" });

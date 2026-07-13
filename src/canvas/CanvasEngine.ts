@@ -13,7 +13,13 @@ import type {
 import { makeId, newPage } from "../types";
 import { drawStroke, defaultOpacity } from "./strokeRender";
 import { drawTemplate } from "./templates";
-import { drawEmoji, drawTextBox, measureTextBox } from "./pageRender";
+import {
+  drawEmoji,
+  drawTextBox,
+  measureTextBox,
+  DARK_PAPER,
+  LIGHT_PAPER,
+} from "./pageRender";
 import { shapeStrokes } from "./shapes";
 import { pressurePctToThinning, type PenConfig } from "../settings";
 
@@ -28,6 +34,8 @@ export interface EngineHost {
   getColor(): string;
   getSize(tool: ToolType): number;
   getPressureMode(): PressureMode;
+  /** True when the page should render in dark comfort mode. */
+  isDarkPaper(): boolean;
   /** Nib/pressure/stabilization for the pen-family tools. */
   getToolConfig(tool: "pen" | "pencil"): PenConfig;
   /** Which shape the shape tool draws (null when the tool is inactive). */
@@ -521,9 +529,14 @@ export class CanvasEngine {
     this.clearCanvas(this.baseCtx, this.base);
     this.applyTransform(this.baseCtx);
 
+    // Dark comfort mode: dark paper + lightened ink. A PDF page keeps its own
+    // light background so the source document stays readable.
+    const dark = this.host.isDarkPaper();
+    const darkPaper = dark && !page.bg;
+
     // 1. The paper itself (the area around it stays the host background).
     this.baseCtx.save();
-    this.baseCtx.fillStyle = "#ffffff";
+    this.baseCtx.fillStyle = darkPaper ? DARK_PAPER : LIGHT_PAPER;
     this.baseCtx.shadowColor = "rgba(0, 0, 0, 0.35)";
     this.baseCtx.shadowBlur = 12;
     this.baseCtx.shadowOffsetY = 3;
@@ -541,7 +554,7 @@ export class CanvasEngine {
       const bg = this.host.resolveBackground(page);
       if (bg) this.baseCtx.drawImage(bg, 0, 0, page.width, page.height);
     } else if (page.template) {
-      drawTemplate(this.baseCtx, page.template, page.width, page.height);
+      drawTemplate(this.baseCtx, page.template, page.width, page.height, dark);
     }
 
     // 3. Images and stickers (under ink, so strokes annotate on top of them).
@@ -566,12 +579,12 @@ export class CanvasEngine {
     // 4. Typed text boxes (under ink so strokes can annotate them).
     this.textBoxes.clear();
     for (const t of page.texts) {
-      drawTextBox(this.baseCtx, t);
+      drawTextBox(this.baseCtx, t, dark);
       this.textBoxes.set(t.id, measureTextBox(this.baseCtx, t));
     }
 
     // 5. Ink (Path2D-cached, so pinch-zoom redraws stay cheap).
-    const rc = { pressureMode: this.host.getPressureMode() };
+    const rc = { pressureMode: this.host.getPressureMode(), dark };
     for (const stroke of page.strokes) {
       drawStroke(this.baseCtx, stroke, rc, !!stroke.sim, true);
     }
@@ -595,21 +608,20 @@ export class CanvasEngine {
     this.applyTransform(this.liveCtx);
 
     // In-progress ink is clipped to the paper like the committed ink.
+    const rc = {
+      pressureMode: this.host.getPressureMode(),
+      dark: this.host.isDarkPaper() && !this.page.bg,
+    };
     this.liveCtx.save();
     this.liveCtx.beginPath();
     this.liveCtx.rect(0, 0, this.page.width, this.page.height);
     this.liveCtx.clip();
     if (this.current) {
-      drawStroke(
-        this.liveCtx,
-        this.current,
-        { pressureMode: this.host.getPressureMode() },
-        this.simulate
-      );
+      drawStroke(this.liveCtx, this.current, rc, this.simulate);
     }
     if (this.shapeDrag) {
       for (const stroke of this.buildShapeStrokes(this.shapeDrag)) {
-        drawStroke(this.liveCtx, stroke, { pressureMode: this.host.getPressureMode() }, false);
+        drawStroke(this.liveCtx, stroke, rc, false);
       }
     }
     this.liveCtx.restore();
@@ -1990,7 +2002,10 @@ export class CanvasEngine {
         drawStroke(
           this.baseCtx,
           this.current,
-          { pressureMode: this.host.getPressureMode() },
+          {
+            pressureMode: this.host.getPressureMode(),
+            dark: this.host.isDarkPaper() && !this.page.bg,
+          },
           this.simulate,
           true
         );

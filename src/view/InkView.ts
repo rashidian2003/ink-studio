@@ -246,6 +246,7 @@ export class InkView extends TextFileView implements EngineHost {
       getPages: () => this.doc.pages,
       getCurrentIndex: () => this.engine.getPageIndex(),
       getPressureMode: () => this.plugin.settings.pressureMode,
+      getDark: () => this.isDarkPaper(),
       resolveBackground: (p: InkPage) => this.assets.resolveBackground(p),
       resolveImage: (p: string) => this.assets.resolveImage(p),
       onSelect: (i) => this.engine.goToPage(i),
@@ -259,6 +260,13 @@ export class InkView extends TextFileView implements EngineHost {
 
     this.syncToolUI();
     this.updateHistoryButtons();
+
+    // In "auto" paper mode, follow Obsidian flipping between light/dark themes.
+    this.registerEvent(
+      this.app.workspace.on("css-change", () => {
+        if (this.plugin.settings.paperTheme === "auto") this.refresh();
+      })
+    );
 
     // Clipboard paste (images) while this view is active.
     this.registerDomEvent(document, "paste", (evt: ClipboardEvent) => {
@@ -589,6 +597,17 @@ export class InkView extends TextFileView implements EngineHost {
         .onClick(() => this.chooseExport())
     );
     menu.addSeparator();
+    menu.addItem((i) =>
+      i
+        .setTitle("Dark paper")
+        .setIcon("moon")
+        .setChecked(this.isDarkPaper())
+        .onClick(() => {
+          this.plugin.settings.paperTheme = this.isDarkPaper() ? "light" : "dark";
+          void this.plugin.saveSettings();
+          this.refresh();
+        })
+    );
     menu.addItem((i) =>
       i
         .setTitle(this.strip?.isVisible() ? "Hide page overview" : "Page overview")
@@ -1118,6 +1137,12 @@ export class InkView extends TextFileView implements EngineHost {
   }
   getPressureMode() {
     return this.plugin.settings.pressureMode;
+  }
+  isDarkPaper(): boolean {
+    const t = this.plugin.settings.paperTheme;
+    if (t === "dark") return true;
+    if (t === "light") return false;
+    return document.body.classList.contains("theme-dark");
   }
   getToolConfig(tool: "pen" | "pencil"): PenConfig {
     return this.plugin.settings.penConfigs[tool];
