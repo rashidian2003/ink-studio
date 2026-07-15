@@ -5,8 +5,9 @@ import {
   InkStudioSettings,
   InkStudioSettingTab,
 } from "./settings";
-import { emptyDocument, serializeDocument } from "./types";
+import { emptyDocument, serializeDocument, PageTemplate } from "./types";
 import { clearPdfCache } from "./pdf/pdfRenderer";
+import { NewNoteModal } from "./view/newNoteModal";
 
 /** The file extension Ink Studio notes use. */
 export const INK_EXTENSION = "ink";
@@ -69,12 +70,27 @@ export default class InkStudioPlugin extends Plugin {
     });
   }
 
-  /** Create a fresh .ink note next to the active file and open it. */
-  async createInkNote(): Promise<void> {
+  /** Ask for name / folder / paper, then create and open the note. */
+  createInkNote(): void {
+    new NewNoteModal(this.app, this.activeFolderPath(), (choice) => {
+      void this.createInkNoteAt(choice.name, choice.folder, choice.template);
+    }).open();
+  }
+
+  private async createInkNoteAt(
+    name: string,
+    folder: string,
+    template: PageTemplate
+  ): Promise<void> {
     try {
-      const folder = this.activeFolderPath();
-      const path = this.uniquePath(folder, "Ink note", INK_EXTENSION);
-      const file = await this.app.vault.create(path, serializeDocument(emptyDocument()));
+      const doc = emptyDocument();
+      if (template.kind !== "blank") {
+        // Apply to the first page and as the note default for new pages.
+        doc.defaultTemplate = { ...template };
+        doc.pages[0].template = { ...template };
+      }
+      const path = this.uniquePath(folder, name, INK_EXTENSION);
+      const file = await this.app.vault.create(path, serializeDocument(doc));
       const leaf = this.app.workspace.getLeaf(true);
       await leaf.openFile(file);
     } catch (e) {
