@@ -42,6 +42,55 @@ test("optional page names survive serialization", () => {
   assert.equal(JSON.parse(serializeDocument(document)).pages[0].name, "Lecture notes");
 });
 
+test("new render dynamics round-trip without affecting legacy strokes", () => {
+  const raw = JSON.stringify({
+    version: 1,
+    app: "ink-studio",
+    mode: "page",
+    pageSize: "a4",
+    pages: [
+      {
+        id: "mixed-page",
+        width: 1240,
+        height: 1754,
+        images: [],
+        texts: [],
+        strokes: [
+          {
+            id: "legacy",
+            tool: "pen",
+            color: "#111111",
+            size: 4,
+            opacity: 1,
+            points: [{ x: 1, y: 2, p: 0.5 }],
+          },
+          {
+            id: "new",
+            tool: "pen",
+            color: "#111111",
+            size: 4,
+            opacity: 1,
+            dynamics: { smoothing: "natural", taperStartPct: 8, taperEndPct: 12 },
+            points: [{ x: 2, y: 3, p: 0.6 }],
+          },
+        ],
+      },
+    ],
+  });
+  const document = parseDocument(raw);
+  assert.equal(document.pages[0].strokes[0].dynamics, undefined);
+  assert.deepEqual(document.pages[0].strokes[1].dynamics, {
+    smoothing: "natural",
+    taperStartPct: 8,
+    taperEndPct: 12,
+  });
+  assert.deepEqual(JSON.parse(serializeDocument(document)).pages[0].strokes[1].dynamics, {
+    smoothing: "natural",
+    taperStartPct: 8,
+    taperEndPct: 12,
+  });
+});
+
 test("malformed content fails safe to a usable empty document", () => {
   const document = parseDocument("{broken");
   assert.equal(document.app, "ink-studio");

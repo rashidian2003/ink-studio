@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const outputDir = mkdtempSync(join(tmpdir(), "ink-studio-tests-"));
-const entries = ["inputMath.test", "document.test"];
+const entries = ["inputMath.test", "inkProcessing.test", "document.test"];
 
 await build({
   entryPoints: Object.fromEntries(

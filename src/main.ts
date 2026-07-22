@@ -47,19 +47,47 @@ export default class InkStudioPlugin extends Plugin {
       // Nested objects need an explicit merge so new tools get defaults.
       toolSizes: Object.assign({}, DEFAULT_SETTINGS.toolSizes, data.toolSizes),
       penConfigs: {
-        pen: Object.assign({}, DEFAULT_SETTINGS.penConfigs.pen, data.penConfigs?.pen),
+        pen: Object.assign({}, DEFAULT_SETTINGS.penConfigs.pen, data.penConfigs?.pen, {
+          customPressureCurve: Array.isArray(data.penConfigs?.pen?.customPressureCurve)
+            ? data.penConfigs.pen.customPressureCurve
+            : DEFAULT_SETTINGS.penConfigs.pen.customPressureCurve.map((point) => ({
+                ...point,
+              })),
+        }),
         pencil: Object.assign(
           {},
           DEFAULT_SETTINGS.penConfigs.pencil,
-          data.penConfigs?.pencil
+          data.penConfigs?.pencil,
+          {
+            customPressureCurve: Array.isArray(
+              data.penConfigs?.pencil?.customPressureCurve
+            )
+              ? data.penConfigs.pencil.customPressureCurve
+              : DEFAULT_SETTINGS.penConfigs.pencil.customPressureCurve.map((point) => ({
+                  ...point,
+                })),
+          }
         ),
       },
-      penPresets: Array.isArray(data.penPresets) ? data.penPresets : [],
+      penPresets: Array.isArray(data.penPresets)
+        ? data.penPresets.map((preset: Record<string, unknown>) => ({
+            ...DEFAULT_SETTINGS.penConfigs.pen,
+            ...preset,
+            customPressureCurve: Array.isArray(preset.customPressureCurve)
+              ? preset.customPressureCurve
+              : DEFAULT_SETTINGS.penConfigs.pen.customPressureCurve.map((point) => ({
+                  ...point,
+                })),
+          }))
+        : [],
     });
     // Free dragging was replaced by a direct position menu in 0.17.0.
     // Keep old saved settings usable instead of leaving the toolbar stranded.
     if (this.settings.toolbarPosition === "floating") {
       this.settings.toolbarPosition = "bottom";
+    }
+    if (!data.inputMode) {
+      this.settings.inputMode = data.fingerDrawing ? "pen-and-finger" : "pen-only";
     }
   }
 

@@ -37,6 +37,30 @@ export interface PageTemplate {
 
 /** How strongly pen pressure affects stroke width. */
 export type PressureMode = "off" | "subtle" | "natural" | "dramatic";
+export type PressureCurveMode = "soft" | "linear" | "hard" | "custom";
+export type StrokeSmoothing = "raw" | "low" | "natural" | "high" | "drawing";
+
+export interface PressureCurvePoint {
+  x: number;
+  y: number;
+}
+
+/** Processing choices captured when a stroke starts, so later setting changes
+ * never alter the appearance of existing ink. All fields are optional on old
+ * documents and therefore remain backward-compatible. */
+export interface StrokeDynamics {
+  pressureCurve?: PressureCurveMode;
+  customPressureCurve?: PressureCurvePoint[];
+  pressureSmoothingPct?: number;
+  speedEffectPct?: number;
+  smoothing?: StrokeSmoothing;
+  stabilizationPct?: number;
+  minWidthPct?: number;
+  maxWidthPct?: number;
+  taperStartPct?: number;
+  taperEndPct?: number;
+  useTilt?: boolean;
+}
 
 /** A single sampled point along a stroke, in page coordinates. */
 export interface StrokePoint {
@@ -71,6 +95,8 @@ export interface Stroke {
    * 0 renders a uniform-width line (used by shapes/tables).
    */
   thin?: number;
+  /** Input/geometry configuration frozen at stroke creation time (v0.18+). */
+  dynamics?: StrokeDynamics;
   points: StrokePoint[];
 }
 

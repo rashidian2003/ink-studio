@@ -1,6 +1,13 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type InkStudioPlugin from "./main";
-import type { NibStyle, PressureMode, ToolType } from "./types";
+import type {
+  NibStyle,
+  PressureCurveMode,
+  PressureCurvePoint,
+  PressureMode,
+  StrokeSmoothing,
+  ToolType,
+} from "./types";
 import type { ToolbarMode, ToolbarPosition } from "./view/floatingToolbar";
 
 /** Per-tool nib configuration edited in the pen panel. */
@@ -10,6 +17,19 @@ export interface PenConfig {
   pressurePct: number;
   /** 0–100: input smoothing (EMA) — higher = smoother, laggier line. */
   stabilizationPct: number;
+  pressureCurve: PressureCurveMode;
+  /** Piecewise-linear control points reserved for the future curve editor. */
+  customPressureCurve: PressureCurvePoint[];
+  /** 0–100: low-latency EMA applied only to pressure, not position. */
+  pressureSmoothingPct: number;
+  /** 0–100: secondary velocity influence; pressure remains primary. */
+  speedEffectPct: number;
+  smoothing: StrokeSmoothing;
+  minWidthPct: number;
+  maxWidthPct: number;
+  taperStartPct: number;
+  taperEndPct: number;
+  useTilt: boolean;
 }
 
 /** A saved "pen box" preset: a fully configured pen restored with one tap. */
@@ -19,6 +39,12 @@ export interface PenPreset extends PenConfig {
   /** Base width in page units. */
   size: number;
 }
+
+export type InputMode =
+  | "pen-only"
+  | "pen-and-finger"
+  | "finger-pan"
+  | "disable-touch-with-pen";
 
 export interface InkStudioSettings {
   /**
@@ -35,6 +61,12 @@ export interface InkStudioSettings {
    * Turn on only if you want to draw with a finger (no stylus).
    */
   fingerDrawing: boolean;
+  /** Explicit stylus/touch policy; fingerDrawing remains for old settings. */
+  inputMode: InputMode;
+  /** Contacts larger than this CSS-pixel size are likely a resting palm. */
+  palmContactSizePx: number;
+  /** How long touch remains guarded after the last pen event. */
+  penGuardMs: number;
   /** Last used colour, restored on new notes. */
   color: string;
   /** Recently used colours shown as quick swatches in the toolbar. */
@@ -75,6 +107,9 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
   pressureMode: "natural",
   tiltEnabled: false,
   fingerDrawing: false,
+  inputMode: "pen-only",
+  palmContactSizePx: 34,
+  penGuardMs: 900,
   color: "#1a1a1a",
   recentColors: ["#1a1a1a", "#e03131", "#1971c2", "#2f9e44", "#f08c00"],
   toolSizes: {
@@ -84,8 +119,48 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
     eraser: 30,
   },
   penConfigs: {
-    pen: { nib: "fountain", pressurePct: 70, stabilizationPct: 25 },
-    pencil: { nib: "pencil", pressurePct: 55, stabilizationPct: 15 },
+    pen: {
+      nib: "fountain",
+      pressurePct: 70,
+      stabilizationPct: 18,
+      pressureCurve: "linear",
+      customPressureCurve: [
+        { x: 0, y: 0 },
+        { x: 0.25, y: 0.16 },
+        { x: 0.5, y: 0.5 },
+        { x: 0.75, y: 0.84 },
+        { x: 1, y: 1 },
+      ],
+      pressureSmoothingPct: 28,
+      speedEffectPct: 10,
+      smoothing: "natural",
+      minWidthPct: 8,
+      maxWidthPct: 100,
+      taperStartPct: 8,
+      taperEndPct: 12,
+      useTilt: false,
+    },
+    pencil: {
+      nib: "pencil",
+      pressurePct: 55,
+      stabilizationPct: 12,
+      pressureCurve: "soft",
+      customPressureCurve: [
+        { x: 0, y: 0 },
+        { x: 0.25, y: 0.16 },
+        { x: 0.5, y: 0.5 },
+        { x: 0.75, y: 0.84 },
+        { x: 1, y: 1 },
+      ],
+      pressureSmoothingPct: 22,
+      speedEffectPct: 14,
+      smoothing: "low",
+      minWidthPct: 6,
+      maxWidthPct: 100,
+      taperStartPct: 4,
+      taperEndPct: 8,
+      useTilt: true,
+    },
   },
   penPresets: [],
   lastTool: "pen",
@@ -158,16 +233,51 @@ export class InkStudioSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Input & touch" });
 
     new Setting(containerEl)
-      .setName("Draw with finger")
-      .setDesc(
-        "Off (recommended for stylus + tablet): only the pen and mouse draw. Touch remains available for page navigation and two-finger zoom."
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.fingerDrawing).onChange(async (v) => {
-          this.plugin.settings.fingerDrawing = v;
-          await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
-        })
+      .setName("Touch input mode")
+      .setDesc("Choose whether touch writes, navigates, or is guarded while a stylus is nearby.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions({
+            "pen-only": "Pen only; two-finger navigation",
+            "pen-and-finger": "Pen and finger write",
+            "finger-pan": "Finger only pans/zooms",
+            "disable-touch-with-pen": "Disable touch while pen is present",
+          })
+          .setValue(this.plugin.settings.inputMode)
+          .onChange(async (value) => {
+            this.plugin.settings.inputMode = value as InputMode;
+            this.plugin.settings.fingerDrawing = value === "pen-and-finger";
+            await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Palm contact threshold")
+      .setDesc("Ignore large single-touch contacts near stylus use. Lower is stricter.")
+      .addSlider((slider) =>
+        slider
+          .setLimits(18, 70, 2)
+          .setDynamicTooltip()
+          .setValue(this.plugin.settings.palmContactSizePx)
+          .onChange(async (value) => {
+            this.plugin.settings.palmContactSizePx = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Pen touch guard")
+      .setDesc("Milliseconds after a pen event that large or guarded touch remains blocked.")
+      .addSlider((slider) =>
+        slider
+          .setLimits(300, 1800, 100)
+          .setDynamicTooltip()
+          .setValue(this.plugin.settings.penGuardMs)
+          .onChange(async (value) => {
+            this.plugin.settings.penGuardMs = value;
+            await this.plugin.saveSettings();
+          })
       );
 
     containerEl.createEl("h3", { text: "Appearance" });

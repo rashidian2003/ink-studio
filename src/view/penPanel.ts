@@ -1,5 +1,11 @@
 import { setToolIcon } from "./icons";
-import type { NibStyle, Stroke, ToolType } from "../types";
+import type {
+  NibStyle,
+  PressureCurveMode,
+  Stroke,
+  StrokeSmoothing,
+  ToolType,
+} from "../types";
 import { makeId } from "../types";
 import {
   InkStudioSettings,
@@ -8,6 +14,11 @@ import {
   unitsToMm,
 } from "../settings";
 import { drawStroke, defaultOpacity, NIB_LABELS } from "../canvas/strokeRender";
+import {
+  applyPressureCurve,
+  constrainPressureRange,
+  smoothPressure,
+} from "../canvas/inkProcessing";
 
 // The per-pen settings popover, opened by tapping the active tool a second
 // time. Live preview squiggle + nib picker + pressure / thickness /
@@ -20,6 +31,83 @@ const NIB_ICONS: Record<NibStyle, string> = {
   colored: "palette",
   charcoal: "brush",
 };
+
+const PEN_FEEL_PRESETS: Array<{
+  label: string;
+  config: Partial<InkStudioSettings["penConfigs"]["pen"]>;
+}> = [
+  {
+    label: "Quick notes",
+    config: {
+      nib: "fine",
+      pressureCurve: "linear",
+      pressurePct: 55,
+      pressureSmoothingPct: 16,
+      speedEffectPct: 6,
+      smoothing: "low",
+      stabilizationPct: 8,
+      taperStartPct: 3,
+      taperEndPct: 5,
+    },
+  },
+  {
+    label: "Natural",
+    config: {
+      nib: "fountain",
+      pressureCurve: "soft",
+      pressurePct: 70,
+      pressureSmoothingPct: 28,
+      speedEffectPct: 10,
+      smoothing: "natural",
+      stabilizationPct: 18,
+      taperStartPct: 8,
+      taperEndPct: 12,
+    },
+  },
+  {
+    label: "Calligraphy",
+    config: {
+      nib: "fountain",
+      pressureCurve: "hard",
+      pressurePct: 90,
+      pressureSmoothingPct: 34,
+      speedEffectPct: 28,
+      smoothing: "natural",
+      stabilizationPct: 24,
+      taperStartPct: 28,
+      taperEndPct: 38,
+    },
+  },
+  {
+    label: "Drawing",
+    config: {
+      nib: "pencil",
+      pressureCurve: "linear",
+      pressurePct: 82,
+      pressureSmoothingPct: 24,
+      speedEffectPct: 16,
+      smoothing: "high",
+      stabilizationPct: 34,
+      taperStartPct: 5,
+      taperEndPct: 10,
+      useTilt: true,
+    },
+  },
+  {
+    label: "Diagram",
+    config: {
+      nib: "fine",
+      pressureCurve: "linear",
+      pressurePct: 0,
+      pressureSmoothingPct: 0,
+      speedEffectPct: 0,
+      smoothing: "high",
+      stabilizationPct: 30,
+      taperStartPct: 0,
+      taperEndPct: 0,
+    },
+  },
+];
 
 export interface PenPanelHost {
   settings: InkStudioSettings;
@@ -126,17 +214,64 @@ export class PenPanel {
       });
     }
 
+    if (isPenFamily && cfg) {
+      panel.createDiv({ cls: "ink-section-label", text: "Writing feel" });
+      const feelRow = panel.createDiv({ cls: "ink-feel-row" });
+      for (const preset of PEN_FEEL_PRESETS) {
+        const button = feelRow.createEl("button", {
+          cls: "ink-feel-btn",
+          text: preset.label,
+          attr: { type: "button", title: `Apply ${preset.label} settings` },
+        });
+        button.onclick = () => {
+          Object.assign(cfg, preset.config);
+          this.host.onConfigChanged();
+          this.close();
+          this.open(anchor, tool);
+        };
+      }
+    }
+
     // --- sliders ---
     panel.createDiv({ cls: "ink-section-label", text: "Stroke controls" });
     const sliders = panel.createDiv({ cls: "ink-pen-sliders" });
 
     if (isPenFamily && cfg) {
+      this.select(
+        sliders,
+        "Pressure curve",
+        {
+          soft: "Soft",
+          linear: "Linear",
+          hard: "Hard",
+          custom: "Custom",
+        },
+        cfg.pressureCurve,
+        (value) => {
+          cfg.pressureCurve = value as PressureCurveMode;
+          this.host.onConfigChanged();
+          this.paintPreview();
+        }
+      );
       this.slider(sliders, "Pressure sensitivity", 0, 100, cfg.pressurePct, (v, label) => {
         cfg.pressurePct = v;
         label.setText(`${v}%`);
         this.host.onConfigChanged();
         this.paintPreview();
       }, `${cfg.pressurePct}%`);
+
+      this.slider(sliders, "Pressure smoothing", 0, 100, cfg.pressureSmoothingPct, (v, label) => {
+        cfg.pressureSmoothingPct = v;
+        label.setText(`${v}%`);
+        this.host.onConfigChanged();
+        this.paintPreview();
+      }, `${cfg.pressureSmoothingPct}%`);
+
+      this.slider(sliders, "Speed effect", 0, 100, cfg.speedEffectPct, (v, label) => {
+        cfg.speedEffectPct = v;
+        label.setText(`${v}%`);
+        this.host.onConfigChanged();
+      }, `${cfg.speedEffectPct}%`);
     }
 
     const sizes = this.host.settings.toolSizes;
@@ -149,11 +284,56 @@ export class PenPanel {
     }, `${unitsToMm(sizes[tool]).toFixed(2)}mm`);
 
     if (isPenFamily && cfg) {
+      this.select(
+        sliders,
+        "Path smoothing",
+        {
+          raw: "Raw",
+          low: "Low",
+          natural: "Natural",
+          high: "High",
+          drawing: "Drawing",
+        },
+        cfg.smoothing,
+        (value) => {
+          cfg.smoothing = value as StrokeSmoothing;
+          this.host.onConfigChanged();
+          this.paintPreview();
+        }
+      );
       this.slider(sliders, "Stroke stabilization", 0, 100, cfg.stabilizationPct, (v, label) => {
         cfg.stabilizationPct = v;
         label.setText(`${v}%`);
         this.host.onConfigChanged();
       }, `${cfg.stabilizationPct}%`);
+
+      this.slider(sliders, "Minimum width", 0, 100, cfg.minWidthPct, (v, label) => {
+        cfg.minWidthPct = Math.min(v, cfg.maxWidthPct);
+        label.setText(`${cfg.minWidthPct}%`);
+        this.host.onConfigChanged();
+        this.paintPreview();
+      }, `${cfg.minWidthPct}%`);
+
+      this.slider(sliders, "Maximum width", 1, 100, cfg.maxWidthPct, (v, label) => {
+        cfg.maxWidthPct = Math.max(v, cfg.minWidthPct);
+        label.setText(`${cfg.maxWidthPct}%`);
+        this.host.onConfigChanged();
+        this.paintPreview();
+      }, `${cfg.maxWidthPct}%`);
+
+      this.slider(sliders, "Start taper", 0, 100, cfg.taperStartPct, (v, label) => {
+        cfg.taperStartPct = v;
+        label.setText(`${v}%`);
+        this.host.onConfigChanged();
+        this.paintPreview();
+      }, `${cfg.taperStartPct}%`);
+
+      this.slider(sliders, "End taper", 0, 100, cfg.taperEndPct, (v, label) => {
+        cfg.taperEndPct = v;
+        label.setText(`${v}%`);
+        this.host.onConfigChanged();
+        this.paintPreview();
+      }, `${cfg.taperEndPct}%`);
     }
 
     // --- colours ---
@@ -210,12 +390,11 @@ export class PenPanel {
       });
       boxBtn.onclick = () => {
         this.host.addPreset({
+          ...cfg,
+          customPressureCurve: cfg.customPressureCurve.map((point) => ({ ...point })),
           id: makeId("pp-"),
-          nib: cfg.nib,
           color: this.host.getColor(),
           size: sizes[tool],
-          pressurePct: cfg.pressurePct,
-          stabilizationPct: cfg.stabilizationPct,
         });
         boxBtn.setText("Added ✓");
         window.setTimeout(() => boxBtn.setText("Add to pen box"), 1200);
@@ -279,6 +458,27 @@ export class PenPanel {
     input.oninput = () => onInput(parseInt(input.value, 10), valueLabel);
   }
 
+  private select(
+    parent: HTMLElement,
+    name: string,
+    options: Record<string, string>,
+    value: string,
+    onChange: (value: string) => void
+  ): void {
+    const row = parent.createDiv({ cls: "ink-slider-row ink-select-row" });
+    const head = row.createDiv({ cls: "ink-slider-head" });
+    head.createSpan({ cls: "ink-slider-name", text: name });
+    const select = row.createEl("select", { cls: "dropdown ink-pen-select" });
+    for (const [optionValue, label] of Object.entries(options)) {
+      const option = select.createEl("option", {
+        text: label,
+        attr: { value: optionValue },
+      });
+      option.selected = optionValue === value;
+    }
+    select.onchange = () => onChange(select.value);
+  }
+
   /** Squiggle preview reflecting nib, size, colour and pressure mapping. */
   private paintPreview(): void {
     const canvas = this.previewCanvas;
@@ -294,6 +494,7 @@ export class PenPanel {
     const cfg = isPenFamily ? this.host.settings.penConfigs[tool] : null;
     const points = [];
     const n = 60;
+    let previousPressure: number | null = null;
     for (let i = 0; i <= n; i++) {
       const t = i / n;
       const x = 16 + t * (canvas.width - 32);
@@ -301,7 +502,13 @@ export class PenPanel {
         canvas.height / 2 +
         Math.sin(t * Math.PI * 2.2) * (canvas.height / 2 - 14);
       // Pressure ramps up then eases off, so thinning is visible end-to-end.
-      const p = 0.25 + 0.65 * Math.sin(t * Math.PI);
+      let p = 0.25 + 0.65 * Math.sin(t * Math.PI);
+      if (cfg) {
+        p = applyPressureCurve(p, cfg.pressureCurve, cfg.customPressureCurve);
+        p = smoothPressure(previousPressure, p, cfg.pressureSmoothingPct);
+        previousPressure = p;
+        p = constrainPressureRange(p, cfg.minWidthPct, cfg.maxWidthPct);
+      }
       points.push({ x, y, p });
     }
     const stroke: Stroke = {
@@ -313,6 +520,13 @@ export class PenPanel {
       sim: false,
       nib: cfg?.nib,
       thin: cfg ? pressurePctToThinning(cfg.pressurePct) : 0,
+      dynamics: cfg
+        ? {
+            smoothing: cfg.smoothing,
+            taperStartPct: cfg.taperStartPct,
+            taperEndPct: cfg.taperEndPct,
+          }
+        : undefined,
       points,
     };
     drawStroke(ctx, stroke, { pressureMode: this.host.settings.pressureMode }, false);

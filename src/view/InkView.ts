@@ -943,9 +943,22 @@ export class InkView extends TextFileView implements EngineHost {
   private activatePreset(preset: PenPreset): void {
     const s = this.plugin.settings;
     s.penConfigs.pen = {
+      ...s.penConfigs.pen,
       nib: preset.nib,
       pressurePct: preset.pressurePct,
       stabilizationPct: preset.stabilizationPct,
+      pressureCurve: preset.pressureCurve,
+      pressureSmoothingPct: preset.pressureSmoothingPct,
+      speedEffectPct: preset.speedEffectPct,
+      smoothing: preset.smoothing,
+      minWidthPct: preset.minWidthPct,
+      maxWidthPct: preset.maxWidthPct,
+      taperStartPct: preset.taperStartPct,
+      taperEndPct: preset.taperEndPct,
+      useTilt: preset.useTilt,
+      customPressureCurve: (preset.customPressureCurve ?? s.penConfigs.pen.customPressureCurve).map(
+        (point) => ({ ...point })
+      ),
     };
     s.toolSizes.pen = preset.size;
     this.setColor(preset.color, false);
@@ -1473,8 +1486,17 @@ export class InkView extends TextFileView implements EngineHost {
   getActiveShape(): ShapeSpec | null {
     return this.currentTool === "shape" ? this.activeShape : null;
   }
-  isFingerDrawing(): boolean {
-    return this.plugin.settings.fingerDrawing;
+  getInputMode() {
+    return this.plugin.settings.inputMode;
+  }
+  getPalmContactSize(): number {
+    return Math.max(18, this.plugin.settings.palmContactSizePx);
+  }
+  getPenGuardMs(): number {
+    return Math.max(0, this.plugin.settings.penGuardMs);
+  }
+  isTiltEnabled(): boolean {
+    return this.plugin.settings.tiltEnabled;
   }
   getHistoryLimit(): number {
     return Math.max(10, Math.min(120, this.plugin.settings.historyLimit));

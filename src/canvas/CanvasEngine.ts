@@ -21,13 +21,29 @@ import {
   LIGHT_PAPER,
 } from "./pageRender";
 import { shapeStrokes } from "./shapes";
-import { pressurePctToThinning, type PenConfig } from "../settings";
+import {
+  pressurePctToThinning,
+  type InputMode,
+  type PenConfig,
+} from "../settings";
 import {
   normalizedPressure,
   screenToPage,
   shouldKeepSample,
   smoothPoint,
 } from "./inputMath";
+import {
+  applyPressureCurve,
+  combinePressureAndSpeed,
+  constrainPressureRange,
+  monotonicTimestamp,
+  orderedUniqueSamples,
+  pointVelocity,
+  reduceStrokePoints,
+  shouldRejectTouchContact,
+  smoothPressure,
+  type TimedPoint,
+} from "./inkProcessing";
 
 /**
  * The host (InkView) supplies tool state, resolves external assets (PDF page
@@ -46,7 +62,10 @@ export interface EngineHost {
   getToolConfig(tool: "pen" | "pencil"): PenConfig;
   /** Which shape the shape tool draws (null when the tool is inactive). */
   getActiveShape(): ShapeSpec | null;
-  isFingerDrawing(): boolean;
+  getInputMode(): InputMode;
+  getPalmContactSize(): number;
+  getPenGuardMs(): number;
+  isTiltEnabled(): boolean;
   getHistoryLimit(): number;
   /**
    * Synchronously return a renderable background / image from the host's
@@ -208,7 +227,6 @@ export class CanvasEngine {
   private activePointerType: string | null = null;
   private current: Stroke | null = null;
   private simulate = false;
-  private penEverUsed = false;
   private penLastSeen = 0;
   private erasing = false;
   private gestureChanged = false;
@@ -272,6 +290,9 @@ export class CanvasEngine {
   // Input stabilization (EMA smoothing of raw points)
   private stabAlpha = 1;
   private stabLast: StrokePoint | null = null;
+  private pressureLast: number | null = null;
+  private sampleLast: TimedPoint | null = null;
+  private activePenConfig: PenConfig | null = null;
 
   // Touch swipe navigation
   private swipe: SwipeTrack | null = null;
@@ -1327,13 +1348,39 @@ export class CanvasEngine {
   private isDrawInput(e: PointerEvent): boolean {
     if (e.pointerType === "pen") return true;
     if (e.pointerType === "mouse") return e.button === 0 || e.buttons === 1;
-    // touch: only when finger drawing is enabled AND no pen has ever been used
-    // in this note. Once a stylus touches the screen we lock touch out, which
-    // is what makes palm rejection reliable.
     if (e.pointerType === "touch") {
-      return this.host.isFingerDrawing() && !this.penEverUsed;
+      const mode = this.host.getInputMode();
+      if (mode === "pen-and-finger") return !this.isLikelyPalm(e);
+      if (mode === "disable-touch-with-pen") {
+        return !this.penIsRecent() && !this.isLikelyPalm(e);
+      }
+      return false;
     }
     return false;
+  }
+
+  private penIsRecent(): boolean {
+    return this.penLastSeen > 0 && Date.now() - this.penLastSeen < this.host.getPenGuardMs();
+  }
+
+  private isLikelyPalm(e: PointerEvent): boolean {
+    if (e.pointerType !== "touch") return false;
+    const threshold = Math.max(18, this.host.getPalmContactSize());
+    const large = Math.max(e.width || 0, e.height || 0) >= threshold;
+    return large && this.penIsRecent();
+  }
+
+  private shouldRejectTouch(e: PointerEvent): boolean {
+    if (e.pointerType !== "touch") return false;
+    return shouldRejectTouchContact(
+      this.host.getInputMode(),
+      e.width,
+      e.height,
+      this.penLastSeen,
+      Date.now(),
+      this.host.getPalmContactSize(),
+      this.host.getPenGuardMs()
+    );
   }
 
   // The three pointer handlers are wrapped so a single unexpected exception
@@ -1378,7 +1425,6 @@ export class CanvasEngine {
 
   private handlePointerDown(e: PointerEvent): void {
     if (e.pointerType === "pen") {
-      this.penEverUsed = true;
       this.penLastSeen = Date.now();
     }
 
@@ -1387,6 +1433,7 @@ export class CanvasEngine {
     // writing). A one-finger touch gesture (finger drawing, pan) yields to the
     // pinch: fingers navigating beats fingers drawing.
     if (e.pointerType === "touch") {
+      if (this.shouldRejectTouch(e)) return;
       this.touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.touchPts.size === 2 && !this.pinch && this.activePointerType !== "pen") {
         e.preventDefault();
@@ -1521,6 +1568,7 @@ export class CanvasEngine {
 
     // Unclaimed touch: one finger pans when zoomed in, flips pages at fit.
     if (e.pointerType === "touch") {
+      if (this.host.getInputMode() === "pen-only") return;
       if (this.zoom > 1.02) {
         this.panDrag = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY, moved: 0 };
       } else {
@@ -1556,6 +1604,10 @@ export class CanvasEngine {
     this.shapeDrag = null;
     this.textGesture = null;
     this.rulerGesture = null;
+    this.stabLast = null;
+    this.pressureLast = null;
+    this.sampleLast = null;
+    this.activePenConfig = null;
     this.snapshotBeforeGesture = null;
     this.gestureChanged = false;
     this.drawLive();
@@ -1738,6 +1790,10 @@ export class CanvasEngine {
     // EMA smoothing: 0% → raw input, 100% → heavy averaging (smooth but laggy).
     this.stabAlpha = 1 - 0.9 * (Math.max(0, Math.min(100, stabPct)) / 100);
     this.stabLast = null;
+    this.pressureLast = null;
+    this.activePenConfig = config;
+    const sampleTime = monotonicTimestamp(e.timeStamp, null, performance.now());
+    this.sampleLast = { x: pt.x, y: pt.y, t: sampleTime };
 
     // Ruler: a stroke starting near an edge locks to it for its whole length.
     this.rulerSnapEdge = this.rulerEdgeFor(pt.x, pt.y);
@@ -1746,6 +1802,7 @@ export class CanvasEngine {
     }
 
     this.erasing = false;
+    const initialPressure = this.processPressure(e, 0);
     this.current = {
       id: makeId("st-"),
       tool,
@@ -1755,7 +1812,14 @@ export class CanvasEngine {
       sim: this.simulate,
       nib: config?.nib,
       thin,
-      points: [{ x: pt.x, y: pt.y, p: this.pressureOf(e) }],
+      dynamics: config
+        ? {
+            smoothing: config.smoothing,
+            taperStartPct: config.taperStartPct,
+            taperEndPct: config.taperEndPct,
+          }
+        : undefined,
+      points: [{ x: pt.x, y: pt.y, p: initialPressure }],
     };
     this.drawLive();
   }
@@ -1768,10 +1832,40 @@ export class CanvasEngine {
       pt = { x: proj.x, y: proj.y, p: pt.p };
     }
     if (this.stabAlpha < 1) {
-      this.stabLast = smoothPoint(this.stabLast, pt, this.stabAlpha);
+      const smoothed = smoothPoint(this.stabLast, pt, this.stabAlpha);
+      // Pressure has its own low-latency filter; stabilization moves geometry
+      // only and must not smooth pressure a second time.
+      this.stabLast = { ...smoothed, p: pt.p };
       pt = { ...this.stabLast };
     }
     return pt;
+  }
+
+  private processPressure(e: PointerEvent, velocity: number): number {
+    const config = this.activePenConfig;
+    let normalized = this.pressureOf(e);
+    if (!config || e.pointerType !== "pen") return normalized;
+    if (config.useTilt && this.host.isTiltEnabled()) {
+      const tiltX = Number.isFinite(e.tiltX) ? e.tiltX : 0;
+      const tiltY = Number.isFinite(e.tiltY) ? e.tiltY : 0;
+      const tilt = Math.min(1, Math.hypot(tiltX, tiltY) / 90);
+      // A lower pencil angle produces a slightly broader/darker mark. The
+      // result is baked into pressure, so redraws do not need hardware data.
+      normalized = Math.min(1, normalized * (1 + tilt * 0.3));
+    }
+    const curved = applyPressureCurve(
+      normalized,
+      config.pressureCurve,
+      config.customPressureCurve
+    );
+    const smoothed = smoothPressure(
+      this.pressureLast,
+      curved,
+      config.pressureSmoothingPct
+    );
+    this.pressureLast = smoothed;
+    const withSpeed = combinePressureAndSpeed(smoothed, velocity, config.speedEffectPct);
+    return constrainPressureRange(withSpeed, config.minWidthPct, config.maxWidthPct);
   }
 
   /** Append all hardware samples carried by one pointer event. Samples closer
@@ -1781,14 +1875,22 @@ export class CanvasEngine {
     if (!this.current) return;
     const coalesced =
       typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
-    const events = coalesced.length > 0 ? coalesced : [e];
+    const events = orderedUniqueSamples([...coalesced, e]);
     const minDistance = 0.3 / Math.max(this.viewScale, 0.01);
     for (const ev of events) {
       const mapped = this.toPage(ev);
+      const timestamp = monotonicTimestamp(
+        ev.timeStamp,
+        this.sampleLast?.t ?? null,
+        performance.now()
+      );
+      const timed = { x: mapped.x, y: mapped.y, t: timestamp };
+      const velocity = pointVelocity(this.sampleLast, timed);
+      this.sampleLast = timed;
       const next = this.processPoint({
         x: mapped.x,
         y: mapped.y,
-        p: this.pressureOf(ev),
+        p: this.processPressure(ev, velocity),
       });
       const last = this.current.points[this.current.points.length - 1];
       if (!shouldKeepSample(last, next, minDistance)) continue;
@@ -2114,9 +2216,13 @@ export class CanvasEngine {
     if (this.current) {
       // Preserve the final hardware position even when no pointermove was
       // dispatched immediately before pointerup.
-      this.appendStrokeSamples(e);
+      if (e.type === "pointerup") this.appendStrokeSamples(e);
       // Ignore a lone tap that produced no real stroke.
       if (this.current.points.length >= 1) {
+        this.current.points = reduceStrokePoints(
+          this.current.points,
+          0.18 / Math.max(this.viewScale, 0.01)
+        );
         this.page.strokes.push(this.current);
         // Incremental commit: draw just this stroke onto base, clipped to the
         // paper like a full redraw would be.
@@ -2140,6 +2246,9 @@ export class CanvasEngine {
       this.current = null;
       this.rulerSnapEdge = null;
       this.stabLast = null;
+      this.pressureLast = null;
+      this.sampleLast = null;
+      this.activePenConfig = null;
       this.drawLive();
     }
     this.finishGesture();
@@ -2159,6 +2268,9 @@ export class CanvasEngine {
     this.rulerGesture = null;
     this.rulerSnapEdge = null;
     this.stabLast = null;
+    this.pressureLast = null;
+    this.sampleLast = null;
+    this.activePenConfig = null;
     this.swipe = null;
     this.pinch = null;
     this.panDrag = null;

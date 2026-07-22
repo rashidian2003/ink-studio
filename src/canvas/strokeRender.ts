@@ -1,5 +1,11 @@
 import { getStroke } from "perfect-freehand";
-import type { NibStyle, PressureMode, Stroke, ToolType } from "../types";
+import type {
+  NibStyle,
+  PressureMode,
+  Stroke,
+  StrokeSmoothing,
+  ToolType,
+} from "../types";
 import { PRESSURE_THINNING } from "../settings";
 
 // Rendering of vector strokes onto a 2D canvas context, using perfect-freehand
@@ -101,6 +107,17 @@ function nibFor(stroke: Stroke): NibProfile {
   return NIB_PROFILES.fountain;
 }
 
+const SMOOTHING_PROFILES: Record<
+  StrokeSmoothing,
+  { smoothing: number; streamline: number }
+> = {
+  raw: { smoothing: 0.22, streamline: 0.06 },
+  low: { smoothing: 0.36, streamline: 0.22 },
+  natural: { smoothing: 0.52, streamline: 0.48 },
+  high: { smoothing: 0.68, streamline: 0.62 },
+  drawing: { smoothing: 0.8, streamline: 0.74 },
+};
+
 /** perfect-freehand options resolved per stroke. */
 function strokeOptions(stroke: Stroke, ctx: RenderContext, simulate: boolean) {
   const isHighlighter = stroke.tool === "highlighter";
@@ -110,15 +127,25 @@ function strokeOptions(stroke: Stroke, ctx: RenderContext, simulate: boolean) {
   // per-stroke thinning when stored (v0.3+), legacy global mapping otherwise.
   const baseThinning = stroke.thin ?? PRESSURE_THINNING[ctx.pressureMode];
   const thinning = isHighlighter ? 0 : baseThinning * nib.thinningMul;
+  const smooth = stroke.dynamics?.smoothing
+    ? SMOOTHING_PROFILES[stroke.dynamics.smoothing]
+    : null;
+  const canTaper = stroke.points.length > 2 && !isHighlighter;
+  const startTaper = canTaper
+    ? stroke.size * Math.max(0, stroke.dynamics?.taperStartPct ?? 0) * 0.5
+    : 0;
+  const endTaper = canTaper
+    ? stroke.size * Math.max(0, stroke.dynamics?.taperEndPct ?? 0) * 0.5
+    : 0;
   return {
     size: stroke.size * (isHighlighter ? 1 : nib.sizeMul),
     thinning,
-    smoothing: nib.smoothing,
-    streamline: isHighlighter ? 0.5 : nib.streamline,
+    smoothing: smooth?.smoothing ?? nib.smoothing,
+    streamline: isHighlighter ? 0.5 : smooth?.streamline ?? nib.streamline,
     simulatePressure: simulate,
     last: true,
-    start: { cap: !isHighlighter },
-    end: { cap: !isHighlighter },
+    start: { cap: !isHighlighter, taper: startTaper },
+    end: { cap: !isHighlighter, taper: endTaper },
   };
 }
 
