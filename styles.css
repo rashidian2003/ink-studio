@@ -1088,7 +1088,6 @@
 
   .ink-tb-btn,
   .ink-color-chip,
-  .ink-toolbar-handle,
   .ink-toolbar-control {
     width: var(--ink-touch-target);
     height: var(--ink-touch-target);
@@ -1185,13 +1184,6 @@
   transform: none;
 }
 
-.ink-toolbar-floating.is-dragging {
-  opacity: 0.9;
-  transition: none;
-  cursor: grabbing;
-  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.28);
-}
-
 .ink-toolbar-floating .ink-tb-group {
   min-height: var(--ink-control-size);
   padding: 2px;
@@ -1238,7 +1230,6 @@
   height: 1px;
 }
 
-.ink-toolbar-handle,
 .ink-toolbar-control {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1251,17 +1242,13 @@
   border-radius: var(--ink-radius-button);
   background: transparent;
   color: var(--text-faint);
-  cursor: grab;
-  touch-action: none;
 }
 
-.ink-toolbar-handle:hover,
 .ink-toolbar-control:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.ink-toolbar-handle .ink-icon,
 .ink-toolbar-control .ink-icon {
   width: 16px;
   height: 16px;
@@ -1278,6 +1265,13 @@
 .ink-toolbar-control {
   width: 32px;
   cursor: pointer;
+}
+
+.ink-toolbar-position {
+  width: 36px;
+  color: var(--interactive-accent);
+  background: var(--ink-accent-soft);
+  box-shadow: inset 0 0 0 var(--ink-border-width) var(--ink-accent-medium);
 }
 
 .ink-toolbar-reveal {

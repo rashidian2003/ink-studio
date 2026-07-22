@@ -204,7 +204,7 @@ export class InkStudioSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Toolbar position")
-      .setDesc("You can also drag the dotted handle; the toolbar snaps to a nearby edge.")
+      .setDesc("Choose an edge here or use the position button on the toolbar.")
       .addDropdown((d) =>
         d
           .addOptions({
@@ -212,7 +212,6 @@ export class InkStudioSettingTab extends PluginSettingTab {
             top: "Top",
             left: "Left",
             right: "Right",
-            floating: "Floating",
           })
           .setValue(this.plugin.settings.toolbarPosition)
           .onChange(async (v) => {

@@ -56,6 +56,11 @@ export default class InkStudioPlugin extends Plugin {
       },
       penPresets: Array.isArray(data.penPresets) ? data.penPresets : [],
     });
+    // Free dragging was replaced by a direct position menu in 0.17.0.
+    // Keep old saved settings usable instead of leaving the toolbar stranded.
+    if (this.settings.toolbarPosition === "floating") {
+      this.settings.toolbarPosition = "bottom";
+    }
   }
 
   async saveSettings(): Promise<void> {

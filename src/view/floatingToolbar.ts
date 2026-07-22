@@ -1,3 +1,4 @@
+import { Menu } from "obsidian";
 import { setToolIcon } from "./icons";
 
 export type ToolbarMode = "full" | "compact" | "hidden";
@@ -14,11 +15,26 @@ export interface FloatingToolbarHost {
   onStateChange(state: FloatingToolbarState): void;
 }
 
-const EDGE_SNAP_PX = 72;
 const VIEW_MARGIN = 12;
 
+const POSITION_LABELS: Record<ToolbarPosition, string> = {
+  top: "Top",
+  bottom: "Bottom",
+  left: "Left side",
+  right: "Right side",
+  floating: "Floating",
+};
+
+const POSITION_ICONS: Record<ToolbarPosition, string> = {
+  top: "panel-top",
+  bottom: "panel-bottom",
+  left: "panel-left",
+  right: "panel-right",
+  floating: "layout-grid",
+};
+
 /**
- * Adds docking, dragging and three density modes to an existing toolbar.
+ * Adds direct edge docking and three density modes to an existing toolbar.
  * Tool ownership stays in InkView; this class only manages presentation and
  * persists a tiny serialisable state through its host.
  */
@@ -27,12 +43,11 @@ export class FloatingToolbarController {
   private bar: HTMLElement;
   private host: FloatingToolbarHost;
   private state: FloatingToolbarState;
-  private handle: HTMLButtonElement;
+  private positionButton: HTMLButtonElement;
   private compactButton: HTMLButtonElement;
   private hideButton: HTMLButtonElement;
   private revealButton: HTMLButtonElement;
   private resizeObserver: ResizeObserver;
-  private activeDragCleanup: (() => void) | null = null;
 
   constructor(
     root: HTMLElement,
@@ -46,16 +61,17 @@ export class FloatingToolbarController {
     this.state = { ...state };
 
     this.bar.addClass("ink-toolbar-floating");
-    this.handle = this.bar.createEl("button", {
-      cls: "ink-toolbar-handle",
+    this.positionButton = this.bar.createEl("button", {
+      cls: "ink-toolbar-control ink-toolbar-position",
       attr: {
         type: "button",
-        title: "Move toolbar",
-        "aria-label": "Move toolbar",
+        title: "Toolbar position",
+        "aria-label": "Choose toolbar position",
+        "aria-haspopup": "menu",
       },
     });
-    this.bar.prepend(this.handle);
-    setToolIcon(this.handle, "grip-vertical");
+    this.bar.prepend(this.positionButton);
+    this.positionButton.onclick = (event) => this.openPositionMenu(event);
 
     const controls = this.bar.createDiv({ cls: "ink-toolbar-controls" });
     this.compactButton = controls.createEl("button", {
@@ -91,7 +107,6 @@ export class FloatingToolbarController {
     setToolIcon(this.revealButton, "panel-top-open");
     this.revealButton.onclick = () => this.setMode("full");
 
-    this.handle.addEventListener("pointerdown", this.onDragStart);
     this.resizeObserver = new ResizeObserver(() => {
       if (this.state.position === "floating") this.applyState();
     });
@@ -100,8 +115,6 @@ export class FloatingToolbarController {
   }
 
   destroy(): void {
-    this.activeDragCleanup?.();
-    this.handle.removeEventListener("pointerdown", this.onDragStart);
     this.resizeObserver.disconnect();
   }
 
@@ -126,6 +139,12 @@ export class FloatingToolbarController {
   private applyState(): void {
     this.bar.dataset.mode = this.state.mode;
     this.bar.dataset.position = this.state.position;
+    setToolIcon(this.positionButton, POSITION_ICONS[this.state.position]);
+    this.positionButton.title = `Toolbar position: ${POSITION_LABELS[this.state.position]}`;
+    this.positionButton.setAttribute(
+      "aria-label",
+      `Choose toolbar position. Current: ${POSITION_LABELS[this.state.position]}`
+    );
 
     if (this.state.position === "floating") {
       const rect = this.root.getBoundingClientRect();
@@ -150,83 +169,18 @@ export class FloatingToolbarController {
     this.host.onStateChange(this.getState());
   }
 
-  private onDragStart = (event: PointerEvent): void => {
-    if (event.button !== 0 && event.pointerType === "mouse") return;
-    event.preventDefault();
-    event.stopPropagation();
-
-    const rootRect = this.root.getBoundingClientRect();
-    const barRect = this.bar.getBoundingClientRect();
-    const offsetX = event.clientX - barRect.left;
-    const offsetY = event.clientY - barRect.top;
-    this.state.floatX = barRect.left - rootRect.left;
-    this.state.floatY = barRect.top - rootRect.top;
-    this.state.position = "floating";
-    this.bar.addClass("is-dragging");
-    this.applyState();
-
-    try {
-      this.handle.setPointerCapture(event.pointerId);
-    } catch {
-      // Some Obsidian mobile WebViews do not support pointer capture reliably.
-      // Window-level listeners below keep the drag working in that case.
+  private openPositionMenu(event: MouseEvent): void {
+    const menu = new Menu();
+    const choices: ToolbarPosition[] = ["top", "bottom", "left", "right"];
+    for (const position of choices) {
+      menu.addItem((item) =>
+        item
+          .setTitle(POSITION_LABELS[position])
+          .setIcon(POSITION_ICONS[position])
+          .setChecked(this.state.position === position)
+          .onClick(() => this.setPosition(position))
+      );
     }
-
-    const dragTarget = this.root.ownerDocument.defaultView ?? window;
-
-    const onMove = (move: PointerEvent): void => {
-      if (move.pointerId !== event.pointerId) return;
-      move.preventDefault();
-      const currentBar = this.bar.getBoundingClientRect();
-      const maxX = Math.max(VIEW_MARGIN, rootRect.width - currentBar.width - VIEW_MARGIN);
-      const maxY = Math.max(VIEW_MARGIN, rootRect.height - currentBar.height - VIEW_MARGIN);
-      this.state.floatX = Math.max(
-        VIEW_MARGIN,
-        Math.min(move.clientX - rootRect.left - offsetX, maxX)
-      );
-      this.state.floatY = Math.max(
-        VIEW_MARGIN,
-        Math.min(move.clientY - rootRect.top - offsetY, maxY)
-      );
-      this.bar.style.left = `${this.state.floatX}px`;
-      this.bar.style.top = `${this.state.floatY}px`;
-    };
-
-    const onEnd = (up: PointerEvent): void => {
-      if (up.pointerId !== event.pointerId) return;
-      cleanup();
-      this.bar.removeClass("is-dragging");
-      try {
-        this.handle.releasePointerCapture(up.pointerId);
-      } catch {
-        // Capture may already be released by a mobile WebView.
-      }
-
-      const r = this.bar.getBoundingClientRect();
-      const distances: Array<[ToolbarPosition, number]> = [
-        ["left", r.left - rootRect.left],
-        ["right", rootRect.right - r.right],
-        ["top", r.top - rootRect.top],
-        ["bottom", rootRect.bottom - r.bottom],
-      ];
-      distances.sort((a, b) => a[1] - b[1]);
-      this.state.position =
-        distances[0][1] <= EDGE_SNAP_PX ? distances[0][0] : "floating";
-      this.applyState();
-      this.persist();
-    };
-
-    const cleanup = (): void => {
-      dragTarget.removeEventListener("pointermove", onMove);
-      dragTarget.removeEventListener("pointerup", onEnd);
-      dragTarget.removeEventListener("pointercancel", onEnd);
-      if (this.activeDragCleanup === cleanup) this.activeDragCleanup = null;
-    };
-
-    this.activeDragCleanup?.();
-    this.activeDragCleanup = cleanup;
-    dragTarget.addEventListener("pointermove", onMove, { passive: false });
-    dragTarget.addEventListener("pointerup", onEnd);
-    dragTarget.addEventListener("pointercancel", onEnd);
-  };
+    menu.showAtMouseEvent(event);
+  }
 }
