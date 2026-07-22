@@ -20,17 +20,44 @@ export interface StripHost {
   resolveImage(path: string): CanvasImageSource | null;
   onSelect(index: number): void;
   onDelete(index: number): void;
+  onDuplicate(index: number): void;
+  onRename(index: number): void;
+  onAdd(event: MouseEvent): void;
   onMove(from: number, to: number): void;
 }
 
 export class ThumbnailStrip {
   private host: StripHost;
   private el: HTMLElement;
+  private body: HTMLElement;
+  private scrim: HTMLElement;
+  private countEl: HTMLElement;
   private visible = false;
 
   constructor(parent: HTMLElement, host: StripHost) {
     this.host = host;
-    this.el = parent.createDiv({ cls: "ink-thumb-strip" });
+    this.scrim = parent.createDiv({ cls: "ink-page-drawer-scrim" });
+    this.scrim.onclick = () => this.setVisible(false);
+    this.scrim.hide();
+    this.el = parent.createDiv({ cls: "ink-thumb-strip ink-page-drawer" });
+    const header = this.el.createDiv({ cls: "ink-page-drawer-header" });
+    const heading = header.createDiv({ cls: "ink-page-drawer-heading" });
+    heading.createDiv({ cls: "ink-page-drawer-title", text: "Pages" });
+    this.countEl = heading.createDiv({ cls: "ink-page-drawer-count", text: "1 page" });
+    const actions = header.createDiv({ cls: "ink-page-drawer-actions" });
+    const add = actions.createEl("button", {
+      cls: "ink-page-drawer-action",
+      attr: { type: "button", title: "Add page", "aria-label": "Add page" },
+    });
+    setToolIcon(add, "plus");
+    add.onclick = (event) => this.host.onAdd(event);
+    const close = actions.createEl("button", {
+      cls: "ink-page-drawer-action",
+      attr: { type: "button", title: "Close pages", "aria-label": "Close pages" },
+    });
+    setToolIcon(close, "chevron-right");
+    close.onclick = () => this.setVisible(false);
+    this.body = this.el.createDiv({ cls: "ink-page-drawer-body" });
     this.el.hide();
   }
 
@@ -42,21 +69,26 @@ export class ThumbnailStrip {
     this.visible = v;
     if (v) {
       this.render();
+      this.scrim.show();
       this.el.show();
+      window.requestAnimationFrame(() => this.el.addClass("is-open"));
     } else {
+      this.el.removeClass("is-open");
       this.el.hide();
+      this.scrim.hide();
     }
   }
 
   /** Rebuild all thumbnails. Cheap at thumb size; call on any change. */
   render(): void {
     if (!this.visible) return;
-    this.el.empty();
+    this.body.empty();
     const pages = this.host.getPages();
     const current = this.host.getCurrentIndex();
+    this.countEl.setText(`${pages.length} ${pages.length === 1 ? "page" : "pages"}`);
 
     pages.forEach((page, index) => {
-      const item = this.el.createDiv({ cls: "ink-thumb" });
+      const item = this.body.createDiv({ cls: "ink-thumb" });
       if (index === current) item.addClass("is-current");
 
       const canvas = renderPageToCanvas(page, {
@@ -73,6 +105,10 @@ export class ThumbnailStrip {
       item.appendChild(canvas);
 
       item.createDiv({ cls: "ink-thumb-label", text: String(index + 1) });
+      item.createDiv({
+        cls: "ink-thumb-name",
+        text: page.name || `Page ${index + 1}`,
+      });
 
       const menuBtn = item.createDiv({ cls: "ink-thumb-menu" });
       setToolIcon(menuBtn, "more-vertical");
@@ -80,6 +116,19 @@ export class ThumbnailStrip {
       menuBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         const menu = new Menu();
+        menu.addItem((mi) =>
+          mi
+            .setTitle("Rename page…")
+            .setIcon("pencil")
+            .onClick(() => this.host.onRename(index))
+        );
+        menu.addItem((mi) =>
+          mi
+            .setTitle("Duplicate page")
+            .setIcon("copy")
+            .onClick(() => this.host.onDuplicate(index))
+        );
+        menu.addSeparator();
         menu.addItem((mi) =>
           mi
             .setTitle("Delete page")
@@ -98,17 +147,23 @@ export class ThumbnailStrip {
     item.addEventListener("pointerdown", (e: PointerEvent) => {
       e.preventDefault();
       const startX = e.clientX;
+      const startY = e.clientY;
       let dragging = false;
 
       const onMove = (ev: PointerEvent) => {
         const dx = ev.clientX - startX;
-        if (!dragging && Math.abs(dx) > DRAG_THRESHOLD) {
+        const dy = ev.clientY - startY;
+        const vertical = getComputedStyle(this.body).flexDirection === "column";
+        const delta = vertical ? dy : dx;
+        if (!dragging && Math.abs(delta) > DRAG_THRESHOLD) {
           dragging = true;
           item.addClass("is-dragging");
           item.setPointerCapture(e.pointerId);
         }
         if (dragging) {
-          item.style.transform = `translateX(${dx}px)`;
+          item.style.transform = vertical
+            ? `translateY(${dy}px)`
+            : `translateX(${dx}px)`;
         }
       };
 
@@ -122,7 +177,7 @@ export class ThumbnailStrip {
           if (ev.type === "pointerup") this.host.onSelect(index);
           return;
         }
-        const target = this.indexAtX(ev.clientX);
+        const target = this.indexAtPoint(ev.clientX, ev.clientY);
         if (target !== null && target !== index) {
           this.host.onMove(index, target);
         } else {
@@ -137,12 +192,15 @@ export class ThumbnailStrip {
   }
 
   /** Which slot does a client-x fall on? Uses thumb midpoints. */
-  private indexAtX(clientX: number): number | null {
-    const thumbs = Array.from(this.el.querySelectorAll<HTMLElement>(".ink-thumb"));
+  private indexAtPoint(clientX: number, clientY: number): number | null {
+    const thumbs = Array.from(this.body.querySelectorAll<HTMLElement>(".ink-thumb"));
     if (thumbs.length === 0) return null;
+    const vertical = getComputedStyle(this.body).flexDirection === "column";
     for (let i = 0; i < thumbs.length; i++) {
       const r = thumbs[i].getBoundingClientRect();
-      if (clientX < r.left + r.width / 2) return i;
+      if (vertical ? clientY < r.top + r.height / 2 : clientX < r.left + r.width / 2) {
+        return i;
+      }
     }
     return thumbs.length - 1;
   }

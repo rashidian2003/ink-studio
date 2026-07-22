@@ -22,6 +22,12 @@ import {
 } from "./pageRender";
 import { shapeStrokes } from "./shapes";
 import { pressurePctToThinning, type PenConfig } from "../settings";
+import {
+  normalizedPressure,
+  screenToPage,
+  shouldKeepSample,
+  smoothPoint,
+} from "./inputMath";
 
 /**
  * The host (InkView) supplies tool state, resolves external assets (PDF page
@@ -41,6 +47,7 @@ export interface EngineHost {
   /** Which shape the shape tool draws (null when the tool is inactive). */
   getActiveShape(): ShapeSpec | null;
   isFingerDrawing(): boolean;
+  getHistoryLimit(): number;
   /**
    * Synchronously return a renderable background / image from the host's
    * cache, or null while it loads. The host triggers engine.refresh() once an
@@ -66,8 +73,6 @@ export interface EngineHost {
    */
   onStrokeSelection(count: number, anchor: { x: number; y: number } | null): void;
 }
-
-const HISTORY_LIMIT = 60;
 
 /** Everything undo/redo restores for a page: ink, images and text boxes. */
 interface PageSnapshot {
@@ -135,6 +140,8 @@ const RULER_SNAP_DIST = 34;
 const MAX_ZOOM = 8;
 /** Zoom level a double-tap jumps to from the fit view. */
 const DOUBLE_TAP_ZOOM = 2.2;
+/** Breathing room around a fitted page, measured in CSS pixels. */
+const PAGE_MARGIN = 24;
 
 function distToSegment(
   px: number,
@@ -232,6 +239,7 @@ export class CanvasEngine {
   /** Text bounding boxes measured at last redraw, for hit-testing. */
   private textBoxes = new Map<string, { x: number; y: number; w: number; h: number }>();
   private baseRedrawQueued = false;
+  private liveRedrawFrame: number | null = null;
 
   // Shape tool
   private shapeDrag: ShapeDrag | null = null;
@@ -270,6 +278,10 @@ export class CanvasEngine {
 
   // Undo / redo, tracked per page so switching pages never corrupts history.
   private history = new Map<string, PageHistory>();
+  private strokeBounds = new WeakMap<
+    Stroke,
+    { minX: number; minY: number; maxX: number; maxY: number }
+  >();
 
   private boundHandlers: Array<[string, EventListener]> = [];
 
@@ -344,6 +356,10 @@ export class CanvasEngine {
   destroy(): void {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    if (this.liveRedrawFrame !== null) {
+      cancelAnimationFrame(this.liveRedrawFrame);
+      this.liveRedrawFrame = null;
+    }
     for (const [t, fn] of this.boundHandlers) this.live?.removeEventListener(t, fn);
     this.boundHandlers = [];
   }
@@ -401,6 +417,34 @@ export class CanvasEngine {
     this.resetView();
     this.layout();
     this.host.onHistoryChange();
+    this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
+    this.host.onChange();
+  }
+
+  duplicatePage(index = this.pageIndex): void {
+    const source = this.doc.pages[index];
+    if (!source) return;
+    const copy = JSON.parse(JSON.stringify(source)) as InkPage;
+    copy.id = makeId("pg-");
+    copy.name = source.name ? `${source.name} copy` : undefined;
+    copy.strokes = copy.strokes.map((stroke) => ({ ...stroke, id: makeId("st-") }));
+    copy.images = copy.images.map((image) => ({ ...image, id: makeId("img-") }));
+    copy.texts = copy.texts.map((text) => ({ ...text, id: makeId("tx-") }));
+    this.doc.pages.splice(index + 1, 0, copy);
+    this.pageIndex = index + 1;
+    this.setSelection(null);
+    this.resetView();
+    this.layout();
+    this.host.onHistoryChange();
+    this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
+    this.host.onChange();
+  }
+
+  setPageName(index: number, name: string): void {
+    const page = this.doc.pages[index];
+    if (!page) return;
+    const cleaned = name.trim();
+    page.name = cleaned || undefined;
     this.host.onPageChanged(this.pageIndex, this.doc.pages.length);
     this.host.onChange();
   }
@@ -471,7 +515,7 @@ export class CanvasEngine {
     }
 
     const page = this.page;
-    const margin = 10;
+    const margin = PAGE_MARGIN;
     this.fitScale = Math.min(
       (availW - margin * 2) / page.width,
       (availH - margin * 2) / page.height
@@ -493,7 +537,7 @@ export class CanvasEngine {
     const s = this.viewScale;
     const pw = this.page.width * s;
     const ph = this.page.height * s;
-    const m = 10;
+    const m = PAGE_MARGIN;
     // Centre when the page fits; otherwise keep an edge margin on screen.
     this.offX = pw <= availW ? (availW - pw) / 2 : Math.max(availW - pw - m, Math.min(this.offX, m));
     this.offY = ph <= availH ? (availH - ph) / 2 : Math.max(availH - ph - m, Math.min(this.offY, m));
@@ -502,6 +546,16 @@ export class CanvasEngine {
   private applyTransform(ctx: CanvasRenderingContext2D): void {
     const k = this.viewScale * this.dpr;
     ctx.setTransform(k, 0, 0, k, this.offX * this.dpr, this.offY * this.dpr);
+  }
+
+  private paperPath(ctx: CanvasRenderingContext2D): void {
+    const radius = Math.min(10 / Math.max(this.viewScale, 0.01), 18);
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(0, 0, this.page.width, this.page.height, radius);
+    } else {
+      ctx.rect(0, 0, this.page.width, this.page.height);
+    }
   }
 
   isZoomLocked(): boolean {
@@ -557,13 +611,19 @@ export class CanvasEngine {
     this.baseCtx.shadowColor = "rgba(0, 0, 0, 0.35)";
     this.baseCtx.shadowBlur = 12;
     this.baseCtx.shadowOffsetY = 3;
-    this.baseCtx.fillRect(0, 0, page.width, page.height);
+    this.paperPath(this.baseCtx);
+    this.baseCtx.fill();
+    this.baseCtx.shadowColor = "transparent";
+    this.baseCtx.lineWidth = 1 / Math.max(this.viewScale, 0.01);
+    this.baseCtx.strokeStyle = darkPaper
+      ? "rgba(255, 255, 255, 0.14)"
+      : "rgba(20, 24, 32, 0.18)";
+    this.baseCtx.stroke();
     this.baseCtx.restore();
 
     // Everything on the paper is clipped to it, like ink on a real page.
     this.baseCtx.save();
-    this.baseCtx.beginPath();
-    this.baseCtx.rect(0, 0, page.width, page.height);
+    this.paperPath(this.baseCtx);
     this.baseCtx.clip();
 
     // 2. Background: PDF page render or paper template.
@@ -620,7 +680,21 @@ export class CanvasEngine {
     });
   }
 
+  /** Limit live-stroke painting to the display refresh rate. Pointer samples
+   * are still collected immediately, including coalesced samples. */
+  private queueLiveRedraw(): void {
+    if (this.liveRedrawFrame !== null) return;
+    this.liveRedrawFrame = requestAnimationFrame(() => {
+      this.liveRedrawFrame = null;
+      this.drawLive();
+    });
+  }
+
   private drawLive(): void {
+    if (this.liveRedrawFrame !== null) {
+      cancelAnimationFrame(this.liveRedrawFrame);
+      this.liveRedrawFrame = null;
+    }
     this.clearCanvas(this.liveCtx, this.live);
     this.applyTransform(this.liveCtx);
 
@@ -630,8 +704,7 @@ export class CanvasEngine {
       dark: this.host.isDarkPaper() && !this.page.bg,
     };
     this.liveCtx.save();
-    this.liveCtx.beginPath();
-    this.liveCtx.rect(0, 0, this.page.width, this.page.height);
+    this.paperPath(this.liveCtx);
     this.liveCtx.clip();
     if (this.current) {
       drawStroke(this.liveCtx, this.current, rc, this.simulate);
@@ -916,6 +989,16 @@ export class CanvasEngine {
     return this.page.strokes.filter((s) => this.selectedStrokeIds.has(s.id));
   }
 
+  /** Copy only strokes about to be mutated so older shallow history snapshots
+   * remain immutable without cloning every point on the page. */
+  private detachSelectedStrokes(): void {
+    this.page.strokes = this.page.strokes.map((stroke) =>
+      this.selectedStrokeIds.has(stroke.id)
+        ? { ...stroke, points: stroke.points.map((point) => ({ ...point })) }
+        : stroke
+    );
+  }
+
   clearStrokeSelection(): void {
     if (this.selectedStrokeIds.size === 0 && !this.lassoPath) return;
     this.selectedStrokeIds.clear();
@@ -1107,7 +1190,9 @@ export class CanvasEngine {
     const t = this.page.texts.find((x) => x.id === id);
     if (!t) return;
     this.pushHistory();
-    Object.assign(t, fields);
+    this.page.texts = this.page.texts.map((item) =>
+      item.id === id ? { ...item, ...fields } : item
+    );
     this.redrawBase();
     this.drawLive();
     this.host.onChange();
@@ -1224,16 +1309,17 @@ export class CanvasEngine {
 
   private toPage(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const rect = this.live.getBoundingClientRect();
-    const s = this.viewScale;
-    return {
-      x: (e.clientX - rect.left - this.offX) / s,
-      y: (e.clientY - rect.top - this.offY) / s,
-    };
+    return screenToPage(e.clientX, e.clientY, {
+      rectLeft: rect.left,
+      rectTop: rect.top,
+      offsetX: this.offX,
+      offsetY: this.offY,
+      scale: this.viewScale,
+    });
   }
 
   private pressureOf(e: PointerEvent): number {
-    if (e.pointerType === "pen" && e.pressure > 0) return e.pressure;
-    return 0.5; // mouse/touch or a pen not reporting pressure
+    return normalizedPressure(e.pointerType, e.pressure);
   }
 
   // --- input & palm rejection ---------------------------------------------
@@ -1284,7 +1370,7 @@ export class CanvasEngine {
   /** setPointerCapture can throw on exotic WebViews; drawing must survive it. */
   private capturePointer(e: PointerEvent): void {
     try {
-      this.capturePointer(e);
+      this.live.setPointerCapture(e.pointerId);
     } catch (err) {
       console.error("Ink Studio: pointer capture failed", err);
     }
@@ -1380,6 +1466,7 @@ export class CanvasEngine {
             };
             this.gestureChanged = false;
             this.snapshotBeforeGesture = this.clonePageSnapshot();
+            this.detachSelectedStrokes();
             return;
           }
         }
@@ -1394,6 +1481,7 @@ export class CanvasEngine {
         this.strokeMove = { lastX: pt.x, lastY: pt.y, moved: 0 };
         this.gestureChanged = false;
         this.snapshotBeforeGesture = this.clonePageSnapshot();
+        this.detachSelectedStrokes();
       } else {
         this.selectedStrokeIds.clear();
         this.selectionBBox = null;
@@ -1584,6 +1672,7 @@ export class CanvasEngine {
         };
         this.gestureChanged = false;
         this.snapshotBeforeGesture = this.clonePageSnapshot();
+        this.page.texts[i] = { ...t };
         return true;
       }
     }
@@ -1618,6 +1707,8 @@ export class CanvasEngine {
     this.imageGesture = gesture;
     this.gestureChanged = false;
     this.snapshotBeforeGesture = this.clonePageSnapshot();
+    const index = this.page.images.findIndex((image) => image.id === gesture.imageId);
+    if (index >= 0) this.page.images[index] = { ...this.page.images[index] };
   }
 
   private beginStroke(e: PointerEvent, tool: ToolType): void {
@@ -1635,7 +1726,7 @@ export class CanvasEngine {
 
     if (tool === "eraser") {
       this.erasing = true;
-      this.eraseAt(pt.x, pt.y);
+      if (this.eraseAt(pt.x, pt.y)) this.queueRedraw();
       return;
     }
 
@@ -1677,19 +1768,32 @@ export class CanvasEngine {
       pt = { x: proj.x, y: proj.y, p: pt.p };
     }
     if (this.stabAlpha < 1) {
-      if (!this.stabLast) {
-        this.stabLast = pt;
-      } else {
-        const a = this.stabAlpha;
-        this.stabLast = {
-          x: this.stabLast.x + (pt.x - this.stabLast.x) * a,
-          y: this.stabLast.y + (pt.y - this.stabLast.y) * a,
-          p: this.stabLast.p + (pt.p - this.stabLast.p) * a,
-        };
-      }
+      this.stabLast = smoothPoint(this.stabLast, pt, this.stabAlpha);
       pt = { ...this.stabLast };
     }
     return pt;
+  }
+
+  /** Append all hardware samples carried by one pointer event. Samples closer
+   * than a small sub-pixel threshold are discarded to cap file size without
+   * changing the visible path. */
+  private appendStrokeSamples(e: PointerEvent): void {
+    if (!this.current) return;
+    const coalesced =
+      typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+    const events = coalesced.length > 0 ? coalesced : [e];
+    const minDistance = 0.3 / Math.max(this.viewScale, 0.01);
+    for (const ev of events) {
+      const mapped = this.toPage(ev);
+      const next = this.processPoint({
+        x: mapped.x,
+        y: mapped.y,
+        p: this.pressureOf(ev),
+      });
+      const last = this.current.points[this.current.points.length - 1];
+      if (!shouldKeepSample(last, next, minDistance)) continue;
+      this.current.points.push(next);
+    }
   }
 
   private handlePointerMove(e: PointerEvent): void {
@@ -1748,7 +1852,7 @@ export class CanvasEngine {
     if (this.lassoPath) {
       const pt = this.toPage(e);
       this.lassoPath.push({ x: pt.x, y: pt.y, p: 0.5 });
-      this.drawLive();
+      this.queueLiveRedraw();
       return;
     }
 
@@ -1808,33 +1912,28 @@ export class CanvasEngine {
       const pt = this.toPage(e);
       this.shapeDrag.x1 = pt.x;
       this.shapeDrag.y1 = pt.y;
-      this.drawLive();
+      this.queueLiveRedraw();
       return;
     }
 
     // Use coalesced events so fast strokes keep every intermediate sample the
     // OS captured between animation frames — critical for smooth ink.
-    const events =
-      typeof e.getCoalescedEvents === "function" && e.getCoalescedEvents().length
-        ? e.getCoalescedEvents()
-        : [e];
-
     if (this.erasing) {
+      const coalesced =
+        typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+      const events = coalesced.length > 0 ? coalesced : [e];
+      let removed = false;
       for (const ev of events) {
         const pt = this.toPage(ev);
-        this.eraseAt(pt.x, pt.y);
+        removed = this.eraseAt(pt.x, pt.y) || removed;
       }
+      if (removed) this.queueRedraw();
       return;
     }
 
     if (!this.current) return;
-    for (const ev of events) {
-      const pt = this.toPage(ev);
-      this.current.points.push(
-        this.processPoint({ x: pt.x, y: pt.y, p: this.pressureOf(ev) })
-      );
-    }
-    this.drawLive();
+    this.appendStrokeSamples(e);
+    this.queueLiveRedraw();
   }
 
   private updateRulerGesture(e: PointerEvent): void {
@@ -2013,6 +2112,9 @@ export class CanvasEngine {
     }
 
     if (this.current) {
+      // Preserve the final hardware position even when no pointermove was
+      // dispatched immediately before pointerup.
+      this.appendStrokeSamples(e);
       // Ignore a lone tap that produced no real stroke.
       if (this.current.points.length >= 1) {
         this.page.strokes.push(this.current);
@@ -2068,7 +2170,7 @@ export class CanvasEngine {
     if (this.gestureChanged && this.snapshotBeforeGesture) {
       const h = this.pageHistory();
       h.undo.push(this.snapshotBeforeGesture);
-      if (h.undo.length > HISTORY_LIMIT) h.undo.shift();
+      if (h.undo.length > this.host.getHistoryLimit()) h.undo.shift();
       h.redo = [];
       this.host.onHistoryChange();
       this.host.onChange();
@@ -2077,7 +2179,7 @@ export class CanvasEngine {
     this.gestureChanged = false;
   }
 
-  private eraseAt(x: number, y: number): void {
+  private eraseAt(x: number, y: number): boolean {
     const radius = this.host.getSize("eraser") / 2;
     const strokes = this.page.strokes;
     let removed = false;
@@ -2089,13 +2191,36 @@ export class CanvasEngine {
     }
     if (removed) {
       this.gestureChanged = true;
-      this.redrawBase();
     }
+    return removed;
   }
 
   private strokeHit(stroke: Stroke, x: number, y: number, radius: number): boolean {
     const pad = radius + stroke.size / 2;
     const pts = stroke.points;
+    let bounds = this.strokeBounds.get(stroke);
+    if (!bounds) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const point of pts) {
+        minX = Math.min(minX, point.x);
+        minY = Math.min(minY, point.y);
+        maxX = Math.max(maxX, point.x);
+        maxY = Math.max(maxY, point.y);
+      }
+      bounds = { minX, minY, maxX, maxY };
+      this.strokeBounds.set(stroke, bounds);
+    }
+    if (
+      x < bounds.minX - pad ||
+      x > bounds.maxX + pad ||
+      y < bounds.minY - pad ||
+      y > bounds.maxY + pad
+    ) {
+      return false;
+    }
     if (pts.length === 1) {
       return Math.hypot(pts[0].x - x, pts[0].y - y) <= pad;
     }
@@ -2119,13 +2244,11 @@ export class CanvasEngine {
   }
 
   private clonePageSnapshot(): PageSnapshot {
-    return JSON.parse(
-      JSON.stringify({
-        strokes: this.page.strokes,
-        images: this.page.images,
-        texts: this.page.texts,
-      })
-    ) as PageSnapshot;
+    return {
+      strokes: this.page.strokes.slice(),
+      images: this.page.images.slice(),
+      texts: this.page.texts.slice(),
+    };
   }
 
   private restoreSnapshot(s: PageSnapshot): void {
@@ -2152,7 +2275,7 @@ export class CanvasEngine {
   private pushHistory(): void {
     const h = this.pageHistory();
     h.undo.push(this.clonePageSnapshot());
-    if (h.undo.length > HISTORY_LIMIT) h.undo.shift();
+    if (h.undo.length > this.host.getHistoryLimit()) h.undo.shift();
     h.redo = [];
     this.host.onHistoryChange();
   }

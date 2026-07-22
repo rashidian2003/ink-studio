@@ -1,6 +1,7 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type InkStudioPlugin from "./main";
 import type { NibStyle, PressureMode, ToolType } from "./types";
+import type { ToolbarMode, ToolbarPosition } from "./view/floatingToolbar";
 
 /** Per-tool nib configuration edited in the pen panel. */
 export interface PenConfig {
@@ -59,6 +60,15 @@ export interface InkStudioSettings {
    * colours and PDF export are unaffected.
    */
   paperTheme: "auto" | "light" | "dark";
+  /** Floating toolbar density and dock position, shared across ink notes. */
+  toolbarMode: ToolbarMode;
+  toolbarPosition: ToolbarPosition;
+  toolbarFloatX: number;
+  toolbarFloatY: number;
+  /** Maximum per-page undo snapshots retained in memory. */
+  historyLimit: number;
+  /** Quiet period after a change before asking Obsidian to persist the file. */
+  autosaveDelayMs: number;
 }
 
 export const DEFAULT_SETTINGS: InkStudioSettings = {
@@ -82,6 +92,12 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
   geminiApiKey: "",
   geminiModel: "gemini-2.0-flash",
   paperTheme: "auto",
+  toolbarMode: "full",
+  toolbarPosition: "bottom",
+  toolbarFloatX: 24,
+  toolbarFloatY: 96,
+  historyLimit: 60,
+  autosaveDelayMs: 350,
 };
 
 /** Maps the legacy pressure mode to perfect-freehand's `thinning` parameter. */
@@ -124,6 +140,8 @@ export class InkStudioSettingTab extends PluginSettingTab {
       text: "Pen options (nib style, pressure, thickness, stabilization, colours) live in the pen panel: tap the active pen tool a second time inside an ink note.",
     });
 
+    containerEl.createEl("h3", { text: "Pen & writing" });
+
     new Setting(containerEl)
       .setName("Tilt shading")
       .setDesc(
@@ -136,6 +154,23 @@ export class InkStudioSettingTab extends PluginSettingTab {
           this.plugin.refreshOpenViews();
         })
       );
+
+    containerEl.createEl("h3", { text: "Input & touch" });
+
+    new Setting(containerEl)
+      .setName("Draw with finger")
+      .setDesc(
+        "Off (recommended for stylus + tablet): only the pen and mouse draw. Touch remains available for page navigation and two-finger zoom."
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.fingerDrawing).onChange(async (v) => {
+          this.plugin.settings.fingerDrawing = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshOpenViews();
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Appearance" });
 
     new Setting(containerEl)
       .setName("Paper")
@@ -150,6 +185,73 @@ export class InkStudioSettingTab extends PluginSettingTab {
             this.plugin.settings.paperTheme = v as "auto" | "light" | "dark";
             await this.plugin.saveSettings();
             this.plugin.refreshOpenViews();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Toolbar density")
+      .setDesc("Full shows every control, compact keeps core writing tools, hidden leaves a small restore button.")
+      .addDropdown((d) =>
+        d
+          .addOptions({ full: "Full", compact: "Compact", hidden: "Hidden" })
+          .setValue(this.plugin.settings.toolbarMode)
+          .onChange(async (v) => {
+            this.plugin.settings.toolbarMode = v as ToolbarMode;
+            await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Toolbar position")
+      .setDesc("You can also drag the dotted handle; the toolbar snaps to a nearby edge.")
+      .addDropdown((d) =>
+        d
+          .addOptions({
+            bottom: "Bottom",
+            top: "Top",
+            left: "Left",
+            right: "Right",
+            floating: "Floating",
+          })
+          .setValue(this.plugin.settings.toolbarPosition)
+          .onChange(async (v) => {
+            this.plugin.settings.toolbarPosition = v as ToolbarPosition;
+            await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "Performance" });
+
+    new Setting(containerEl)
+      .setName("Undo history")
+      .setDesc("Maximum steps kept per page. Lower values use less memory in very large notes.")
+      .addSlider((slider) =>
+        slider
+          .setLimits(10, 120, 10)
+          .setDynamicTooltip()
+          .setValue(this.plugin.settings.historyLimit)
+          .onChange(async (value) => {
+            this.plugin.settings.historyLimit = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Autosave delay")
+      .setDesc("Groups rapid edits before asking Obsidian to save. A final save is requested when the view closes.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions({
+            "150": "150 ms (fast)",
+            "350": "350 ms (recommended)",
+            "700": "700 ms (battery saver)",
+          })
+          .setValue(String(this.plugin.settings.autosaveDelayMs))
+          .onChange(async (value) => {
+            this.plugin.settings.autosaveDelayMs = Number(value);
+            await this.plugin.saveSettings();
           })
       );
 
@@ -183,17 +285,5 @@ export class InkStudioSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
-      .setName("Draw with finger")
-      .setDesc(
-        "Off (recommended for stylus + tablet): only the pen and mouse draw, so your palm never leaves marks. Turn on to draw with a finger on devices without a stylus."
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.fingerDrawing).onChange(async (v) => {
-          this.plugin.settings.fingerDrawing = v;
-          await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
-        })
-      );
   }
 }

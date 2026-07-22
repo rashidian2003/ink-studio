@@ -123,6 +123,8 @@ export interface InkText {
 /** One page of a note. Page coordinates run 0..width / 0..height. */
 export interface InkPage {
   id: string;
+  /** Optional user-facing label shown in the page manager. */
+  name?: string;
   width: number;
   height: number;
   bg?: PageBackground;
@@ -211,6 +213,7 @@ export function parseDocument(raw: string): InkDocument {
       parsed.pages.length > 0
         ? parsed.pages.map((pg) => ({
             id: pg.id ?? makeId("pg-"),
+            name: pg.name,
             width: pg.width ?? A4_WIDTH,
             height: pg.height ?? A4_HEIGHT,
             bg: pg.bg,

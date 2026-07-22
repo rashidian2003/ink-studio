@@ -36,6 +36,12 @@ const ICONS = [
   "circle-plus",
   "lock",
   "lock-open",
+  "grip-vertical",
+  "minimize-2",
+  "maximize-2",
+  "panel-top-open",
+  "eye-off",
+  "focus",
 ];
 
 const entries = ICONS.map((name) => {

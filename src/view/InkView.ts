@@ -36,6 +36,10 @@ import { ColorPopover } from "./colorPopover";
 import { TemplateModal } from "./templateModal";
 import { TextBoxModal } from "./textModal";
 import {
+  FloatingToolbarController,
+  type FloatingToolbarState,
+} from "./floatingToolbar";
+import {
   CalligraphyModal,
   OcrResultModal,
   TidyModal,
@@ -127,6 +131,45 @@ class TableModal extends Modal {
   }
 }
 
+class PageNameModal extends Modal {
+  private value: string;
+  private onSubmit: (name: string) => void;
+
+  constructor(app: App, current: string, onSubmit: (name: string) => void) {
+    super(app);
+    this.value = current;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Rename page");
+    new Setting(this.contentEl).setName("Page name").addText((text) => {
+      text.setPlaceholder("Optional page name").setValue(this.value).onChange((value) => {
+        this.value = value;
+      });
+      window.setTimeout(() => {
+        text.inputEl.focus();
+        text.inputEl.select();
+      }, 50);
+      text.inputEl.onkeydown = (event) => {
+        if (event.key === "Enter") this.submit();
+      };
+    });
+    new Setting(this.contentEl).addButton((button) =>
+      button.setButtonText("Save").setCta().onClick(() => this.submit())
+    );
+  }
+
+  private submit(): void {
+    this.onSubmit(this.value);
+    this.close();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 /**
  * The Ink Studio note view. Backed by TextFileView so it plugs directly into
  * Obsidian's file lifecycle: the framework reads the `.ink` file, hands us the
@@ -142,6 +185,7 @@ export class InkView extends TextFileView implements EngineHost {
   private penPanel: PenPanel | null = null;
   private stickerPicker: StickerPicker | null = null;
   private colorPopover: ColorPopover | null = null;
+  private toolbarController: FloatingToolbarController | null = null;
 
   private canvasHost!: HTMLElement;
   private toolButtons = new Map<CanvasTool, HTMLElement>();
@@ -154,6 +198,13 @@ export class InkView extends TextFileView implements EngineHost {
   private prevBtn!: HTMLElement;
   private nextBtn!: HTMLElement;
   private pageIndicator!: HTMLElement;
+  private presetGroup!: HTMLElement;
+  private focusExitBtn!: HTMLElement;
+  private saveStatusEl!: HTMLElement;
+  private autosaveTimer: number | null = null;
+  private saveStatusTimer: number | null = null;
+  private focusMode = false;
+  private toolbarModeBeforeFocus: FloatingToolbarState["mode"] = "full";
 
   private currentTool: CanvasTool;
   private currentColor: string;
@@ -221,7 +272,7 @@ export class InkView extends TextFileView implements EngineHost {
       addPreset: (preset: PenPreset) => {
         this.plugin.settings.penPresets.push(preset);
         this.plugin.saveSettingsDebounced();
-        // Presets appear in the colour popover; nothing to re-render inline.
+        this.renderPresetButtons();
       },
     });
     this.stickerPicker = new StickerPicker(root, (emoji) => {
@@ -238,6 +289,7 @@ export class InkView extends TextFileView implements EngineHost {
           (p) => p.id !== id
         );
         this.plugin.saveSettingsDebounced();
+        this.renderPresetButtons();
       },
     });
 
@@ -252,12 +304,38 @@ export class InkView extends TextFileView implements EngineHost {
       resolveImage: (p: string) => this.assets.resolveImage(p),
       onSelect: (i) => this.engine.goToPage(i),
       onDelete: (i) => this.confirmDeletePage(i),
+      onDuplicate: (i) => this.engine.duplicatePage(i),
+      onRename: (i) => {
+        const page = this.doc.pages[i];
+        if (!page) return;
+        new PageNameModal(this.app, page.name ?? "", (name) => {
+          this.engine.setPageName(i, name);
+        }).open();
+      },
+      onAdd: (event) => this.openAddPageMenu(event),
       onMove: (from, to) => this.engine.movePage(from, to),
     });
 
     this.canvasHost = root.createDiv({ cls: "ink-canvas-host" });
     this.engine.mount(this.canvasHost);
     this.engine.setDocument(this.doc);
+
+    this.focusExitBtn = root.createEl("button", {
+      cls: "ink-focus-exit",
+      attr: {
+        type: "button",
+        title: "Exit focus mode",
+        "aria-label": "Exit focus mode",
+      },
+    });
+    setToolIcon(this.focusExitBtn, "minimize-2");
+    this.focusExitBtn.onclick = () => this.setFocusMode(false);
+    this.focusExitBtn.hide();
+    this.saveStatusEl = root.createDiv({
+      cls: "ink-save-status is-quiet",
+      text: "Saved",
+      attr: { role: "status", "aria-live": "polite" },
+    });
 
     this.syncToolUI();
     this.updateHistoryButtons();
@@ -317,6 +395,10 @@ export class InkView extends TextFileView implements EngineHost {
       } else if (!mod && evt.key === "ArrowRight") {
         this.engine.goToPage(this.engine.getPageIndex() + 1);
       } else if (evt.key === "Escape") {
+        if (this.focusMode) {
+          this.setFocusMode(false);
+          return;
+        }
         this.penPanel?.close();
         this.stickerPicker?.close();
       }
@@ -324,12 +406,25 @@ export class InkView extends TextFileView implements EngineHost {
   }
 
   async onClose(): Promise<void> {
+    this.setFocusMode(false);
     this.penPanel?.close();
     this.stickerPicker?.close();
     this.colorPopover?.close();
+    this.toolbarController?.destroy();
+    this.toolbarController = null;
     this.engine.destroy();
     this.assets?.destroy();
     if (this.stripRefreshTimer !== null) window.clearTimeout(this.stripRefreshTimer);
+    if (this.autosaveTimer !== null) {
+      window.clearTimeout(this.autosaveTimer);
+      this.autosaveTimer = null;
+      try {
+        this.requestSave();
+      } catch (error) {
+        console.error("Ink Studio: final save request failed", error);
+      }
+    }
+    if (this.saveStatusTimer !== null) window.clearTimeout(this.saveStatusTimer);
     this.contentEl.empty();
   }
 
@@ -344,6 +439,7 @@ export class InkView extends TextFileView implements EngineHost {
     toolsGroup.setAttribute("aria-label", "Drawing tools");
     (Object.keys(STROKE_TOOL_ICONS) as ToolType[]).forEach((tool) => {
       const btn = this.makeToolButton(toolsGroup, tool, STROKE_TOOL_ICONS[tool], TOOL_LABELS[tool]);
+      btn.addClass(tool === "pen" || tool === "eraser" ? "ink-compact-primary" : "ink-compact-secondary");
       btn.onclick = () => {
         if (this.currentTool === tool) this.penPanel?.toggle(btn, tool);
         else {
@@ -358,20 +454,25 @@ export class InkView extends TextFileView implements EngineHost {
     // --- Group 2: selection & text tools.
     const selGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-selection" });
     selGroup.setAttribute("aria-label", "Selection tools");
-    this.makeToolButton(
+    const lassoBtn = this.makeToolButton(
       selGroup,
       "lasso",
       "lasso",
       "Lasso — circle strokes to select them"
-    ).onclick = () => this.selectTool("lasso");
-    this.makeToolButton(
+    );
+    lassoBtn.addClass("ink-compact-secondary");
+    lassoBtn.onclick = () => this.selectTool("lasso");
+    const selectBtn = this.makeToolButton(
       selGroup,
       "select",
       "mouse-pointer",
       "Select / move images & stickers"
-    ).onclick = () => this.selectTool("select");
-    this.makeToolButton(selGroup, "text", "type", "Text — tap the page to place").onclick = () =>
-      this.selectTool("text");
+    );
+    selectBtn.addClass("ink-compact-primary");
+    selectBtn.onclick = () => this.selectTool("select");
+    const textBtn = this.makeToolButton(selGroup, "text", "type", "Text — tap the page to place");
+    textBtn.addClass("ink-compact-secondary");
+    textBtn.onclick = () => this.selectTool("text");
 
     this.deleteImageBtn = selGroup.createEl("button", {
       cls: "ink-tb-btn ink-delete-image",
@@ -379,12 +480,14 @@ export class InkView extends TextFileView implements EngineHost {
     });
     setToolIcon(this.deleteImageBtn, "trash-2");
     this.deleteImageBtn.onclick = () => this.engine.deleteSelectedImage();
+    this.deleteImageBtn.addClass("ink-compact-secondary");
     this.deleteImageBtn.hide();
 
     bar.createDiv({ cls: "ink-tb-sep" });
 
     // --- Group 3: colour and content actions.
     const contentGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-content" });
+    contentGroup.addClass("ink-compact-secondary");
     contentGroup.setAttribute("aria-label", "Colour and insert actions");
     this.colorChip = contentGroup.createEl("button", {
       cls: "ink-color-chip",
@@ -410,6 +513,12 @@ export class InkView extends TextFileView implements EngineHost {
     setToolIcon(moreBtn, "more-vertical");
     moreBtn.onclick = (e) => this.openMoreMenu(e);
 
+    // Quick-access saved pens. The group stays absent when the pen box is
+    // empty, so it never consumes writing space unnecessarily.
+    this.presetGroup = bar.createDiv({ cls: "ink-tb-group ink-toolbar-presets" });
+    this.presetGroup.addClass("ink-compact-secondary");
+    this.renderPresetButtons();
+
     bar.createDiv({ cls: "ink-tb-sep" });
 
     // --- Group 6: history.
@@ -420,6 +529,7 @@ export class InkView extends TextFileView implements EngineHost {
       attr: { "aria-label": "Undo", title: "Undo (Ctrl/Cmd+Z)" },
     });
     setToolIcon(this.undoBtn, "undo-2");
+    this.undoBtn.addClass("ink-compact-primary");
     this.undoBtn.onclick = () => this.engine.undo();
 
     this.redoBtn = historyGroup.createEl("button", {
@@ -427,12 +537,14 @@ export class InkView extends TextFileView implements EngineHost {
       attr: { "aria-label": "Redo", title: "Redo (Shift+Ctrl/Cmd+Z)" },
     });
     setToolIcon(this.redoBtn, "redo-2");
+    this.redoBtn.addClass("ink-compact-secondary");
     this.redoBtn.onclick = () => this.engine.redo();
 
     bar.createDiv({ cls: "ink-tb-sep" });
 
     // --- Group 7: page navigation.
     const pageGroup = bar.createDiv({ cls: "ink-tb-group ink-page-group" });
+    pageGroup.addClass("ink-compact-secondary");
     pageGroup.setAttribute("aria-label", "Page navigation");
     this.prevBtn = pageGroup.createEl("button", {
       cls: "ink-tb-btn",
@@ -441,7 +553,16 @@ export class InkView extends TextFileView implements EngineHost {
     setToolIcon(this.prevBtn, "chevron-left");
     this.prevBtn.onclick = () => this.engine.goToPage(this.engine.getPageIndex() - 1);
 
-    this.pageIndicator = pageGroup.createSpan({ cls: "ink-page-indicator", text: "1 / 1" });
+    this.pageIndicator = pageGroup.createEl("button", {
+      cls: "ink-page-indicator",
+      text: "1 / 1",
+      attr: {
+        type: "button",
+        title: "Open page manager",
+        "aria-label": "Open page manager",
+      },
+    });
+    this.pageIndicator.onclick = () => this.toggleOverview();
 
     this.nextBtn = pageGroup.createEl("button", {
       cls: "ink-tb-btn",
@@ -468,6 +589,41 @@ export class InkView extends TextFileView implements EngineHost {
       this.updateLockButton();
     };
     this.updateLockButton();
+
+    const toolbarState: FloatingToolbarState = {
+      mode: this.plugin.settings.toolbarMode,
+      position: this.plugin.settings.toolbarPosition,
+      floatX: this.plugin.settings.toolbarFloatX,
+      floatY: this.plugin.settings.toolbarFloatY,
+    };
+    this.toolbarController = new FloatingToolbarController(root, bar, toolbarState, {
+      onStateChange: (state) => {
+        this.plugin.settings.toolbarMode = state.mode;
+        this.plugin.settings.toolbarPosition = state.position;
+        this.plugin.settings.toolbarFloatX = state.floatX;
+        this.plugin.settings.toolbarFloatY = state.floatY;
+        this.plugin.saveSettingsDebounced();
+      },
+    });
+  }
+
+  private renderPresetButtons(): void {
+    if (!this.presetGroup) return;
+    this.presetGroup.empty();
+    const presets = this.plugin.settings.penPresets.slice(0, 4);
+    this.presetGroup.toggleClass("is-empty", presets.length === 0);
+    for (const preset of presets) {
+      const button = this.presetGroup.createEl("button", {
+        cls: "ink-toolbar-preset",
+        attr: {
+          type: "button",
+          title: "Use saved pen",
+          "aria-label": `Use saved pen ${preset.color}`,
+        },
+      });
+      button.style.setProperty("--ink-preset-color", preset.color);
+      button.onclick = () => this.activatePreset(preset);
+    }
   }
 
   private updateLockButton(): void {
@@ -597,6 +753,14 @@ export class InkView extends TextFileView implements EngineHost {
     const menu = new Menu();
     menu.addItem((i) =>
       i
+        .setTitle(this.focusMode ? "Exit focus mode" : "Enter focus mode")
+        .setIcon(this.focusMode ? "minimize-2" : "maximize-2")
+        .setChecked(this.focusMode)
+        .onClick(() => this.setFocusMode(!this.focusMode))
+    );
+    menu.addSeparator();
+    menu.addItem((i) =>
+      i
         .setTitle("Convert handwriting to text (AI)")
         .setIcon("file-text")
         .onClick(() => void this.convertHandwritingFlow())
@@ -655,6 +819,22 @@ export class InkView extends TextFileView implements EngineHost {
         .onClick(() => this.confirmDeletePage(this.engine.getPageIndex()))
     );
     menu.showAtMouseEvent(e);
+  }
+
+  private setFocusMode(enabled: boolean): void {
+    if (this.focusMode === enabled) return;
+    this.focusMode = enabled;
+    this.contentEl.toggleClass("is-focus-mode", enabled);
+    document.body.toggleClass("ink-studio-focus-mode", enabled);
+    if (enabled) {
+      this.toolbarModeBeforeFocus = this.toolbarController?.getState().mode ?? "full";
+      this.toolbarController?.setMode("compact");
+      this.focusExitBtn?.show();
+      this.strip?.setVisible(false);
+    } else {
+      this.toolbarController?.setMode(this.toolbarModeBeforeFocus);
+      this.focusExitBtn?.hide();
+    }
   }
 
   private openAddPageMenu(e: MouseEvent): void {
@@ -810,8 +990,12 @@ export class InkView extends TextFileView implements EngineHost {
   }
 
   private updateHistoryButtons(): void {
-    this.undoBtn?.toggleClass("is-disabled", !this.engine.canUndo());
-    this.redoBtn?.toggleClass("is-disabled", !this.engine.canRedo());
+    const cannotUndo = !this.engine.canUndo();
+    const cannotRedo = !this.engine.canRedo();
+    this.undoBtn?.toggleClass("is-disabled", cannotUndo);
+    this.undoBtn?.toggleClass("is-unavailable", cannotUndo);
+    this.redoBtn?.toggleClass("is-disabled", cannotRedo);
+    this.redoBtn?.toggleClass("is-unavailable", cannotRedo);
   }
 
   private queueStripRefresh(): void {
@@ -826,6 +1010,10 @@ export class InkView extends TextFileView implements EngineHost {
   /** Called by the plugin when settings change externally. */
   refresh(): void {
     this.engine.refresh();
+    if (!this.focusMode) {
+      this.toolbarController?.setMode(this.plugin.settings.toolbarMode);
+      this.toolbarController?.setPosition(this.plugin.settings.toolbarPosition);
+    }
     this.updateColorChip();
     this.syncToolUI();
     this.queueStripRefresh();
@@ -1184,6 +1372,9 @@ export class InkView extends TextFileView implements EngineHost {
   isFingerDrawing(): boolean {
     return this.plugin.settings.fingerDrawing;
   }
+  getHistoryLimit(): number {
+    return Math.max(10, Math.min(120, this.plugin.settings.historyLimit));
+  }
   resolveBackground(page: InkPage): CanvasImageSource | null {
     return this.assets.resolveBackground(page);
   }
@@ -1191,8 +1382,38 @@ export class InkView extends TextFileView implements EngineHost {
     return this.assets.resolveImage(path);
   }
   onChange(): void {
-    this.requestSave();
+    this.setSaveStatus("saving");
+    if (this.autosaveTimer !== null) window.clearTimeout(this.autosaveTimer);
+    this.autosaveTimer = window.setTimeout(
+      () => this.flushSaveRequest(),
+      Math.max(100, this.plugin.settings.autosaveDelayMs)
+    );
     this.queueStripRefresh();
+  }
+
+  private flushSaveRequest(): void {
+    this.autosaveTimer = null;
+    try {
+      this.requestSave();
+      if (this.saveStatusTimer !== null) window.clearTimeout(this.saveStatusTimer);
+      this.saveStatusTimer = window.setTimeout(() => {
+        this.saveStatusTimer = null;
+        this.setSaveStatus("saved");
+      }, 700);
+    } catch (error) {
+      console.error("Ink Studio: save request failed", error);
+      this.setSaveStatus("error");
+      new Notice("Ink Studio: could not save the latest change.");
+    }
+  }
+
+  private setSaveStatus(state: "saving" | "saved" | "error"): void {
+    if (!this.saveStatusEl) return;
+    this.saveStatusEl.dataset.state = state;
+    this.saveStatusEl.setText(
+      state === "saving" ? "Saving…" : state === "error" ? "Save error" : "Saved"
+    );
+    this.saveStatusEl.toggleClass("is-quiet", state === "saved");
   }
   onHistoryChange(): void {
     this.updateHistoryButtons();
