@@ -32,6 +32,7 @@ export class FloatingToolbarController {
   private hideButton: HTMLButtonElement;
   private revealButton: HTMLButtonElement;
   private resizeObserver: ResizeObserver;
+  private activeDragCleanup: (() => void) | null = null;
 
   constructor(
     root: HTMLElement,
@@ -99,6 +100,7 @@ export class FloatingToolbarController {
   }
 
   destroy(): void {
+    this.activeDragCleanup?.();
     this.handle.removeEventListener("pointerdown", this.onDragStart);
     this.resizeObserver.disconnect();
   }
@@ -157,12 +159,24 @@ export class FloatingToolbarController {
     const barRect = this.bar.getBoundingClientRect();
     const offsetX = event.clientX - barRect.left;
     const offsetY = event.clientY - barRect.top;
+    this.state.floatX = barRect.left - rootRect.left;
+    this.state.floatY = barRect.top - rootRect.top;
     this.state.position = "floating";
-    this.bar.dataset.position = "floating";
     this.bar.addClass("is-dragging");
-    this.handle.setPointerCapture(event.pointerId);
+    this.applyState();
+
+    try {
+      this.handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Some Obsidian mobile WebViews do not support pointer capture reliably.
+      // Window-level listeners below keep the drag working in that case.
+    }
+
+    const dragTarget = this.root.ownerDocument.defaultView ?? window;
 
     const onMove = (move: PointerEvent): void => {
+      if (move.pointerId !== event.pointerId) return;
+      move.preventDefault();
       const currentBar = this.bar.getBoundingClientRect();
       const maxX = Math.max(VIEW_MARGIN, rootRect.width - currentBar.width - VIEW_MARGIN);
       const maxY = Math.max(VIEW_MARGIN, rootRect.height - currentBar.height - VIEW_MARGIN);
@@ -179,9 +193,8 @@ export class FloatingToolbarController {
     };
 
     const onEnd = (up: PointerEvent): void => {
-      this.handle.removeEventListener("pointermove", onMove);
-      this.handle.removeEventListener("pointerup", onEnd);
-      this.handle.removeEventListener("pointercancel", onEnd);
+      if (up.pointerId !== event.pointerId) return;
+      cleanup();
       this.bar.removeClass("is-dragging");
       try {
         this.handle.releasePointerCapture(up.pointerId);
@@ -203,8 +216,17 @@ export class FloatingToolbarController {
       this.persist();
     };
 
-    this.handle.addEventListener("pointermove", onMove);
-    this.handle.addEventListener("pointerup", onEnd);
-    this.handle.addEventListener("pointercancel", onEnd);
+    const cleanup = (): void => {
+      dragTarget.removeEventListener("pointermove", onMove);
+      dragTarget.removeEventListener("pointerup", onEnd);
+      dragTarget.removeEventListener("pointercancel", onEnd);
+      if (this.activeDragCleanup === cleanup) this.activeDragCleanup = null;
+    };
+
+    this.activeDragCleanup?.();
+    this.activeDragCleanup = cleanup;
+    dragTarget.addEventListener("pointermove", onMove, { passive: false });
+    dragTarget.addEventListener("pointerup", onEnd);
+    dragTarget.addEventListener("pointercancel", onEnd);
   };
 }
