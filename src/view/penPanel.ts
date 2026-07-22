@@ -28,6 +28,8 @@ export interface PenPanelHost {
   /** Persist settings + re-render whatever depends on them. */
   onConfigChanged(): void;
   addPreset(preset: PenPreset): void;
+  /** Keep toolbar expanded/open state in sync with the floating panel. */
+  onOpenChange?(open: boolean, tool: ToolType): void;
 }
 
 export class PenPanel {
@@ -53,10 +55,12 @@ export class PenPanel {
   }
 
   close(): void {
+    const wasOpen = this.el !== null;
     document.removeEventListener("pointerdown", this.dismiss, true);
     this.el?.remove();
     this.el = null;
     this.previewCanvas = null;
+    if (wasOpen) this.host.onOpenChange?.(false, this.tool);
   }
 
   toggle(anchor: HTMLElement, tool: ToolType): void {
@@ -72,12 +76,7 @@ export class PenPanel {
     this.tool = tool;
     const panel = this.root.createDiv({ cls: "ink-pen-panel" });
     this.el = panel;
-
-    // Anchor below the button, clamped to the view.
-    const rootRect = this.root.getBoundingClientRect();
-    const aRect = anchor.getBoundingClientRect();
-    panel.style.top = `${aRect.bottom - rootRect.top + 6}px`;
-    panel.style.left = `${Math.max(8, Math.min(aRect.left - rootRect.left, rootRect.width - 340))}px`;
+    panel.style.visibility = "hidden";
 
     const isPenFamily = tool === "pen" || tool === "pencil";
     const cfg = isPenFamily ? this.host.settings.penConfigs[tool] : null;
@@ -224,11 +223,39 @@ export class PenPanel {
     }
 
     this.paintPreview();
+    this.positionNear(anchor);
+    panel.style.removeProperty("visibility");
+    this.host.onOpenChange?.(true, tool);
     // Defer so the opening tap doesn't immediately dismiss the panel.
     window.setTimeout(
       () => document.addEventListener("pointerdown", this.dismiss, true),
       0
     );
+  }
+
+  /** Place the panel above or below its anchor and keep it inside the note. */
+  private positionNear(anchor: HTMLElement): void {
+    const panel = this.el;
+    if (!panel) return;
+    const margin = 8;
+    const gap = 8;
+    const rootRect = this.root.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const maxLeft = Math.max(margin, rootRect.width - panelRect.width - margin);
+    const left = Math.max(
+      margin,
+      Math.min(anchorRect.left - rootRect.left, maxLeft)
+    );
+    const below = rootRect.bottom - anchorRect.bottom - gap;
+    const above = anchorRect.top - rootRect.top - gap;
+    const preferredTop =
+      panelRect.height <= below || below >= above
+        ? anchorRect.bottom - rootRect.top + gap
+        : anchorRect.top - rootRect.top - panelRect.height - gap;
+    const maxTop = Math.max(margin, rootRect.height - panelRect.height - margin);
+    panel.style.left = `${left}px`;
+    panel.style.top = `${Math.max(margin, Math.min(preferredTop, maxTop))}px`;
   }
 
   private slider(

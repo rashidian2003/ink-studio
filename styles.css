@@ -521,7 +521,7 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  background: var(--background-secondary-alt);
+  background: var(--ink-surface-canvas, var(--background-secondary-alt));
   touch-action: none;
 }
 
@@ -555,8 +555,27 @@
    ======================================================================== */
 
 .ink-studio-view {
+  /* Phase-one design system. Components below consume these tokens instead of
+     inventing local spacing, sizing and motion values. */
+  --ink-space-1: 4px;
+  --ink-space-2: 8px;
+  --ink-space-3: 12px;
+  --ink-space-4: 16px;
+  --ink-control-size: 40px;
+  --ink-touch-target: 44px;
+  --ink-icon-size: 20px;
+  --ink-radius-button: 9px;
+  --ink-radius-panel: 14px;
+  --ink-border-width: 1px;
+  --ink-duration-fast: 140ms;
+  --ink-duration-panel: 200ms;
   --ink-accent-soft: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
   --ink-accent-medium: color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+  --ink-state-held: color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+  --ink-state-disabled: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+  --ink-status-error: var(--text-error);
+  --ink-status-success: var(--text-success, #2f9e44);
+  --ink-surface-canvas: var(--background-secondary-alt);
   --ink-surface-raised: color-mix(
     in srgb,
     var(--background-primary) 92%,
@@ -572,17 +591,17 @@
     var(--background-modifier-border) 72%,
     transparent
   );
-  --ink-shadow-float: 0 18px 46px rgba(0, 0, 0, 0.2),
-    0 2px 8px rgba(0, 0, 0, 0.08);
+  --ink-shadow-float: 0 12px 32px rgba(0, 0, 0, 0.18),
+    0 2px 7px rgba(0, 0, 0, 0.08);
   isolation: isolate;
   background: var(--background-primary);
 }
 
 /* A composed command bar: related actions live in individual capsules. */
 .ink-toolbar {
-  gap: 7px;
-  padding: 8px 10px;
-  min-height: 54px;
+  gap: var(--ink-space-1);
+  padding: var(--ink-space-2);
+  min-height: calc(var(--ink-control-size) + var(--ink-space-3));
   border-bottom: 1px solid var(--ink-border-subtle);
   background: var(--ink-toolbar-bg);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 7px 24px rgba(0, 0, 0, 0.06);
@@ -592,10 +611,10 @@
 
 .ink-tb-group {
   gap: 2px;
-  padding: 3px;
-  min-height: 40px;
-  border: 1px solid var(--ink-border-subtle);
-  border-radius: 12px;
+  padding: 2px;
+  min-height: var(--ink-control-size);
+  border: var(--ink-border-width) solid var(--ink-border-subtle);
+  border-radius: calc(var(--ink-radius-button) + 3px);
   background: color-mix(in srgb, var(--background-secondary) 68%, transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
@@ -607,12 +626,14 @@
 .ink-tb-btn,
 .ink-color-chip {
   position: relative;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  width: var(--ink-control-size);
+  height: var(--ink-control-size);
+  border-radius: var(--ink-radius-button);
   color: var(--text-muted);
-  transition: color 140ms ease, background-color 140ms ease,
-    box-shadow 140ms ease, transform 100ms ease;
+  transition: color var(--ink-duration-fast) ease,
+    background-color var(--ink-duration-fast) ease,
+    box-shadow var(--ink-duration-fast) ease,
+    transform 100ms ease;
 }
 
 .ink-tb-btn:hover,
@@ -620,6 +641,14 @@
   background: var(--background-modifier-hover);
   color: var(--text-normal);
   box-shadow: inset 0 0 0 1px var(--ink-border-subtle);
+}
+
+.ink-tb-btn:active,
+.ink-color-chip:active,
+.ink-current-tool:active,
+.ink-toolbar-control:active {
+  background: var(--ink-state-held);
+  transform: scale(0.96);
 }
 
 .ink-tb-btn:focus-visible,
@@ -638,6 +667,13 @@
     0 2px 8px var(--ink-accent-soft);
 }
 
+.ink-tool-btn.is-panel-open,
+.ink-current-tool.is-panel-open {
+  background: var(--ink-accent-medium);
+  color: var(--interactive-accent);
+  box-shadow: inset 0 0 0 var(--ink-border-width) var(--interactive-accent);
+}
+
 .ink-tool-btn.is-active::after {
   content: "";
   position: absolute;
@@ -651,13 +687,17 @@
 }
 
 .ink-tb-btn.is-disabled {
-  opacity: 0.28;
-  filter: grayscale(1);
+  opacity: 0.58;
+  border: var(--ink-border-width) dashed var(--ink-border-subtle);
+  background: var(--ink-state-disabled);
+  color: var(--text-faint);
+  filter: saturate(0.45);
+  cursor: not-allowed;
 }
 
 .ink-icon {
-  width: 18px;
-  height: 18px;
+  width: var(--ink-icon-size);
+  height: var(--ink-icon-size);
   stroke-width: 1.9;
 }
 
@@ -688,12 +728,12 @@
 .ink-pen-panel,
 .ink-sticker-panel {
   border: 1px solid var(--ink-border-subtle);
-  border-radius: 16px;
+  border-radius: var(--ink-radius-panel);
   background: color-mix(in srgb, var(--ink-surface-raised) 94%, transparent);
   box-shadow: var(--ink-shadow-float);
-  backdrop-filter: blur(18px) saturate(1.15);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-  animation: ink-panel-enter 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  animation: ink-panel-enter var(--ink-duration-panel) cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .ink-color-popover {
@@ -703,8 +743,12 @@
 
 .ink-pen-panel {
   width: 340px;
+  max-width: calc(100% - var(--ink-space-4));
+  max-height: calc(100% - var(--ink-space-4));
   padding: 16px;
   gap: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .ink-sticker-panel {
@@ -935,7 +979,7 @@
 
 /* A subtle desk texture gives the page a clearer sense of depth. */
 .ink-canvas-host {
-  background-color: var(--background-secondary-alt);
+  background-color: var(--ink-surface-canvas, var(--background-secondary-alt));
   background-image: radial-gradient(
     circle at 1px 1px,
     color-mix(in srgb, var(--text-faint) 18%, transparent) 1px,
@@ -1034,18 +1078,24 @@
 }
 
 @media (pointer: coarse) {
+  .ink-studio-view {
+    --ink-control-size: var(--ink-touch-target);
+  }
+
   .ink-toolbar {
-    min-height: 58px;
+    min-height: calc(var(--ink-touch-target) + var(--ink-space-3));
   }
 
   .ink-tb-btn,
-  .ink-color-chip {
-    width: 40px;
-    height: 40px;
+  .ink-color-chip,
+  .ink-toolbar-handle,
+  .ink-toolbar-control {
+    width: var(--ink-touch-target);
+    height: var(--ink-touch-target);
   }
 
   .ink-sticker-btn {
-    min-height: 38px;
+    min-height: var(--ink-touch-target);
   }
 }
 
@@ -1067,18 +1117,22 @@
   position: absolute;
   z-index: 35;
   width: max-content;
-  max-width: calc(100% - 24px);
-  min-height: 48px;
-  padding: 4px;
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
-  border-radius: 15px;
-  background: color-mix(in srgb, var(--background-primary) 82%, transparent);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(18px) saturate(1.2);
-  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  max-width: calc(100% - var(--ink-space-4));
+  min-height: calc(var(--ink-control-size) + var(--ink-space-2));
+  padding: var(--ink-space-1);
+  border: var(--ink-border-width) solid var(--ink-border-subtle);
+  border-radius: var(--ink-radius-panel);
+  background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+  box-shadow: var(--ink-shadow-float);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
   overflow: visible;
-  transition: left 180ms ease, right 180ms ease, top 180ms ease,
-    bottom 180ms ease, transform 180ms ease, opacity 140ms ease;
+  transition: left var(--ink-duration-panel) ease,
+    right var(--ink-duration-panel) ease,
+    top var(--ink-duration-panel) ease,
+    bottom var(--ink-duration-panel) ease,
+    transform var(--ink-duration-panel) ease,
+    opacity var(--ink-duration-fast) ease;
 }
 
 .ink-toolbar-floating[data-position="top"] {
@@ -1131,15 +1185,14 @@
 }
 
 .ink-toolbar-floating .ink-tb-group {
-  min-height: 40px;
+  min-height: var(--ink-control-size);
   padding: 2px;
   border: 0;
   background: transparent;
   box-shadow: none;
 }
 
-.ink-toolbar-floating .ink-tb-history:has(.ink-tb-btn:not(.is-unavailable)) .is-unavailable,
-.ink-toolbar-floating .ink-tb-history:not(:has(.ink-tb-btn:not(.is-unavailable))) {
+.ink-toolbar-floating[data-mode="compact"] .ink-tb-history .is-unavailable {
   display: none;
 }
 
@@ -1184,10 +1237,10 @@
   align-items: center;
   justify-content: center;
   width: 26px;
-  height: 38px;
+  height: var(--ink-control-size);
   padding: 0;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--ink-radius-button);
   background: transparent;
   color: var(--text-faint);
   cursor: grab;
@@ -1215,7 +1268,7 @@
 }
 
 .ink-toolbar-control {
-  width: 30px;
+  width: 32px;
   cursor: pointer;
 }
 
@@ -1238,9 +1291,9 @@
 }
 
 .ink-toolbar-floating[data-mode="hidden"] {
-  min-width: 46px;
-  min-height: 46px;
-  padding: 3px;
+  min-width: calc(var(--ink-touch-target) + 2px);
+  min-height: calc(var(--ink-touch-target) + 2px);
+  padding: 1px;
 }
 
 .ink-toolbar-floating[data-mode="hidden"] > :not(.ink-toolbar-controls),
@@ -1256,8 +1309,8 @@
 }
 
 .ink-toolbar-floating[data-mode="hidden"] .ink-toolbar-reveal {
-  width: 40px;
-  height: 40px;
+  width: var(--ink-touch-target);
+  height: var(--ink-touch-target);
   color: var(--interactive-accent);
 }
 
@@ -1268,7 +1321,7 @@
 .ink-toolbar-preset {
   position: relative;
   width: 30px;
-  height: 34px;
+  height: var(--ink-control-size);
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -1301,7 +1354,7 @@
 }
 
 .ink-toolbar-floating .ink-page-indicator {
-  height: 32px;
+  height: var(--ink-control-size);
   min-width: 48px;
   padding: 0 8px;
   border: 0;
@@ -1311,9 +1364,114 @@
   cursor: pointer;
 }
 
+/* Current-tool summary: icon, tool name, live thickness and colour. */
+.ink-current-tool {
+  display: inline-flex;
+  height: var(--ink-control-size);
+  min-width: 116px;
+  padding: 0 var(--ink-space-2);
+  align-items: center;
+  gap: var(--ink-space-2);
+  border: var(--ink-border-width) solid var(--ink-border-subtle);
+  border-radius: var(--ink-radius-button);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: default;
+  transition: background-color var(--ink-duration-fast) ease,
+    border-color var(--ink-duration-fast) ease,
+    box-shadow var(--ink-duration-fast) ease,
+    transform 100ms ease;
+}
+
+.ink-current-tool.has-options {
+  cursor: pointer;
+}
+
+.ink-current-tool.has-options:hover {
+  border-color: var(--ink-accent-medium);
+  background: var(--ink-accent-soft);
+}
+
+.ink-current-tool-icon {
+  display: inline-flex;
+  color: var(--interactive-accent);
+}
+
+.ink-current-tool-meta {
+  display: flex;
+  min-width: 48px;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+}
+
+.ink-current-tool-name {
+  color: var(--text-normal);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ink-current-tool-detail {
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ink-current-tool-swatch {
+  width: 10px;
+  height: 24px;
+  border: 2px solid var(--background-primary);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--background-modifier-border);
+}
+
+.ink-current-tool-swatch.is-hidden {
+  visibility: hidden;
+}
+
+.ink-current-tool-chevron {
+  display: inline-flex;
+  margin-inline-start: -4px;
+  color: var(--text-faint);
+  transform: rotate(90deg);
+}
+
+.ink-current-tool-chevron .ink-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ink-current-tool:not(.has-options) .ink-current-tool-chevron {
+  visibility: hidden;
+}
+
+.ink-toolbar-floating[data-position="left"] .ink-current-tool,
+.ink-toolbar-floating[data-position="right"] .ink-current-tool {
+  width: var(--ink-control-size);
+  min-width: var(--ink-control-size);
+  padding: 0;
+  justify-content: center;
+}
+
+.ink-toolbar-floating[data-position="left"] .ink-current-tool-meta,
+.ink-toolbar-floating[data-position="right"] .ink-current-tool-meta,
+.ink-toolbar-floating[data-position="left"] .ink-current-tool-swatch,
+.ink-toolbar-floating[data-position="right"] .ink-current-tool-swatch,
+.ink-toolbar-floating[data-position="left"] .ink-current-tool-chevron,
+.ink-toolbar-floating[data-position="right"] .ink-current-tool-chevron {
+  display: none;
+}
+
 .ink-toolbar-floating .ink-page-indicator:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
+}
+
+.ink-toolbar-floating .ink-page-indicator.is-panel-open {
+  background: var(--ink-accent-soft);
+  color: var(--interactive-accent);
+  box-shadow: inset 0 0 0 var(--ink-border-width) var(--ink-accent-medium);
 }
 
 @media (max-width: 700px) {
@@ -1324,8 +1482,34 @@
     scrollbar-width: none;
   }
 
-  .ink-toolbar-floating[data-mode="full"] .ink-toolbar-presets,
-  .ink-toolbar-floating[data-mode="full"] .ink-tb-selection .ink-compact-secondary {
+  .ink-toolbar-floating[data-mode="full"] .ink-compact-secondary,
+  .ink-toolbar-floating[data-mode="full"] .ink-toolbar-presets {
+    display: none;
+  }
+
+  .ink-toolbar-floating .ink-tb-group + .ink-tb-group {
+    margin-inline-start: 1px;
+    padding-inline-start: var(--ink-space-1);
+  }
+
+  .ink-pen-panel,
+  .ink-color-popover,
+  .ink-sticker-panel {
+    max-width: calc(100% - var(--ink-space-4));
+  }
+}
+
+@media (max-width: 520px) {
+  .ink-current-tool {
+    width: var(--ink-control-size);
+    min-width: var(--ink-control-size);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .ink-current-tool-meta,
+  .ink-current-tool-swatch,
+  .ink-current-tool-chevron {
     display: none;
   }
 }

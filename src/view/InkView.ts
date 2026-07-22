@@ -45,7 +45,7 @@ import {
   TidyModal,
   renderStrokesPreview,
 } from "./aiModals";
-import type { PenConfig, PenPreset } from "../settings";
+import { unitsToMm, type PenConfig, type PenPreset } from "../settings";
 import {
   buildPdfPages,
   pickDeviceFile,
@@ -69,6 +69,26 @@ const TOOL_LABELS: Record<ToolType, string> = {
   highlighter: "Highlighter",
   eraser: "Eraser",
 };
+
+const CANVAS_TOOL_ICONS: Record<CanvasTool, string> = {
+  ...STROKE_TOOL_ICONS,
+  select: "mouse-pointer",
+  shape: "shapes",
+  text: "type",
+  lasso: "lasso",
+};
+
+const CANVAS_TOOL_LABELS: Record<CanvasTool, string> = {
+  ...TOOL_LABELS,
+  select: "Select",
+  shape: "Shape",
+  text: "Text",
+  lasso: "Lasso",
+};
+
+function isStrokeTool(tool: CanvasTool): tool is ToolType {
+  return tool === "pen" || tool === "pencil" || tool === "highlighter" || tool === "eraser";
+}
 
 const SHAPE_ICONS: Record<Exclude<ShapeKind, "table">, string> = {
   rect: "square",
@@ -190,6 +210,11 @@ export class InkView extends TextFileView implements EngineHost {
   private canvasHost!: HTMLElement;
   private toolButtons = new Map<CanvasTool, HTMLElement>();
   private colorChip!: HTMLElement;
+  private currentToolButton!: HTMLButtonElement;
+  private currentToolIcon!: HTMLElement;
+  private currentToolName!: HTMLElement;
+  private currentToolDetail!: HTMLElement;
+  private currentToolSwatch!: HTMLElement;
   private undoBtn!: HTMLElement;
   private redoBtn!: HTMLElement;
   private deleteImageBtn!: HTMLElement;
@@ -274,6 +299,7 @@ export class InkView extends TextFileView implements EngineHost {
         this.plugin.saveSettingsDebounced();
         this.renderPresetButtons();
       },
+      onOpenChange: (open, tool) => this.syncPenPanelState(open, tool),
     });
     this.stickerPicker = new StickerPicker(root, (emoji) => {
       this.engine.addSticker(emoji);
@@ -314,6 +340,10 @@ export class InkView extends TextFileView implements EngineHost {
       },
       onAdd: (event) => this.openAddPageMenu(event),
       onMove: (from, to) => this.engine.movePage(from, to),
+      onVisibilityChange: (visible) => {
+        this.pageIndicator?.toggleClass("is-panel-open", visible);
+        this.pageIndicator?.setAttribute("aria-expanded", String(visible));
+      },
     });
 
     this.canvasHost = root.createDiv({ cls: "ink-canvas-host" });
@@ -433,12 +463,45 @@ export class InkView extends TextFileView implements EngineHost {
   private buildToolbar(root: HTMLElement): void {
     const bar = root.createDiv({ cls: "ink-toolbar" });
 
-    // --- Group 1: core drawing tools. Second tap on the active pen-family
+    // --- Group 1: a stable summary of the current tool. For stroke tools it
+    // also opens quick settings, so colour and width remain one tap away.
+    const currentGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-current" });
+    currentGroup.setAttribute("aria-label", "Current tool");
+    this.currentToolButton = currentGroup.createEl("button", {
+      cls: "ink-current-tool ink-compact-primary",
+      attr: {
+        type: "button",
+        "aria-haspopup": "dialog",
+        "aria-expanded": "false",
+      },
+    });
+    this.currentToolIcon = this.currentToolButton.createSpan({
+      cls: "ink-current-tool-icon",
+    });
+    const currentMeta = this.currentToolButton.createSpan({ cls: "ink-current-tool-meta" });
+    this.currentToolName = currentMeta.createSpan({ cls: "ink-current-tool-name" });
+    this.currentToolDetail = currentMeta.createSpan({ cls: "ink-current-tool-detail" });
+    this.currentToolSwatch = this.currentToolButton.createSpan({
+      cls: "ink-current-tool-swatch",
+    });
+    const currentChevron = this.currentToolButton.createSpan({
+      cls: "ink-current-tool-chevron",
+    });
+    setToolIcon(currentChevron, "chevron-right");
+    this.currentToolButton.onclick = () => {
+      if (isStrokeTool(this.currentTool)) {
+        this.penPanel?.toggle(this.currentToolButton, this.currentTool);
+      }
+    };
+
+    // --- Group 2: core drawing tools. Second tap on the active pen-family
     // tool opens its full settings panel (nib, size, stabilization, colour).
     const toolsGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-tools" });
     toolsGroup.setAttribute("aria-label", "Drawing tools");
-    (Object.keys(STROKE_TOOL_ICONS) as ToolType[]).forEach((tool) => {
+    (["pen", "eraser", "pencil", "highlighter"] as ToolType[]).forEach((tool) => {
       const btn = this.makeToolButton(toolsGroup, tool, STROKE_TOOL_ICONS[tool], TOOL_LABELS[tool]);
+      btn.setAttribute("aria-haspopup", "dialog");
+      btn.setAttribute("aria-expanded", "false");
       btn.addClass(tool === "pen" || tool === "eraser" ? "ink-compact-primary" : "ink-compact-secondary");
       btn.onclick = () => {
         if (this.currentTool === tool) this.penPanel?.toggle(btn, tool);
@@ -449,9 +512,7 @@ export class InkView extends TextFileView implements EngineHost {
       };
     });
 
-    bar.createDiv({ cls: "ink-tb-sep" });
-
-    // --- Group 2: selection & text tools.
+    // --- Group 3: selection & text tools.
     const selGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-selection" });
     selGroup.setAttribute("aria-label", "Selection tools");
     const lassoBtn = this.makeToolButton(
@@ -483,15 +544,29 @@ export class InkView extends TextFileView implements EngineHost {
     this.deleteImageBtn.addClass("ink-compact-secondary");
     this.deleteImageBtn.hide();
 
-    bar.createDiv({ cls: "ink-tb-sep" });
+    // --- Group 4: history, kept next to the quick tools.
+    const historyGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-history" });
+    historyGroup.setAttribute("aria-label", "History");
+    this.undoBtn = historyGroup.createEl("button", {
+      cls: "ink-tb-btn ink-compact-primary",
+      attr: { type: "button", "aria-label": "Undo", title: "Undo (Ctrl/Cmd+Z)" },
+    });
+    setToolIcon(this.undoBtn, "undo-2");
+    this.undoBtn.onclick = () => this.engine.undo();
 
-    // --- Group 3: colour and content actions.
+    this.redoBtn = historyGroup.createEl("button", {
+      cls: "ink-tb-btn ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Redo", title: "Redo (Shift+Ctrl/Cmd+Z)" },
+    });
+    setToolIcon(this.redoBtn, "redo-2");
+    this.redoBtn.onclick = () => this.engine.redo();
+
+    // --- Group 5: colour, insert and overflow actions.
     const contentGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-content" });
-    contentGroup.addClass("ink-compact-secondary");
     contentGroup.setAttribute("aria-label", "Colour and insert actions");
     this.colorChip = contentGroup.createEl("button", {
-      cls: "ink-color-chip",
-      attr: { "aria-label": "Colour", title: "Colour & pen box" },
+      cls: "ink-color-chip ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Colour", title: "Colour & pen box" },
     });
     this.colorChip.createDiv({ cls: "ink-color-chip-dot" });
     this.colorChip.onclick = () => this.colorPopover?.toggle(this.colorChip);
@@ -499,16 +574,16 @@ export class InkView extends TextFileView implements EngineHost {
 
     // --- Group 4: insert (shapes/table/ruler/sticker/image/pdf).
     this.insertBtn = contentGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Insert", title: "Insert shapes, table, image, PDF…" },
+      cls: "ink-tb-btn ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Insert", title: "Insert shapes, table, image, PDF…" },
     });
     setToolIcon(this.insertBtn, "circle-plus");
     this.insertBtn.onclick = (e) => this.openInsertMenu(e);
 
     // --- Group 5: overflow (AI, template, overview, export, page ops).
     const moreBtn = contentGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "More", title: "AI tools, paper, export, page actions" },
+      cls: "ink-tb-btn ink-compact-primary",
+      attr: { type: "button", "aria-label": "More", title: "AI tools, paper, export, page actions" },
     });
     setToolIcon(moreBtn, "more-vertical");
     moreBtn.onclick = (e) => this.openMoreMenu(e);
@@ -519,69 +594,47 @@ export class InkView extends TextFileView implements EngineHost {
     this.presetGroup.addClass("ink-compact-secondary");
     this.renderPresetButtons();
 
-    bar.createDiv({ cls: "ink-tb-sep" });
-
-    // --- Group 6: history.
-    const historyGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-history" });
-    historyGroup.setAttribute("aria-label", "History");
-    this.undoBtn = historyGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Undo", title: "Undo (Ctrl/Cmd+Z)" },
-    });
-    setToolIcon(this.undoBtn, "undo-2");
-    this.undoBtn.addClass("ink-compact-primary");
-    this.undoBtn.onclick = () => this.engine.undo();
-
-    this.redoBtn = historyGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Redo", title: "Redo (Shift+Ctrl/Cmd+Z)" },
-    });
-    setToolIcon(this.redoBtn, "redo-2");
-    this.redoBtn.addClass("ink-compact-secondary");
-    this.redoBtn.onclick = () => this.engine.redo();
-
-    bar.createDiv({ cls: "ink-tb-sep" });
-
-    // --- Group 7: page navigation.
+    // --- Group 6: page navigation. Compact layouts retain only the indicator.
     const pageGroup = bar.createDiv({ cls: "ink-tb-group ink-page-group" });
-    pageGroup.addClass("ink-compact-secondary");
     pageGroup.setAttribute("aria-label", "Page navigation");
     this.prevBtn = pageGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Previous page", title: "Previous page" },
+      cls: "ink-tb-btn ink-page-detail ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Previous page", title: "Previous page" },
     });
     setToolIcon(this.prevBtn, "chevron-left");
     this.prevBtn.onclick = () => this.engine.goToPage(this.engine.getPageIndex() - 1);
 
     this.pageIndicator = pageGroup.createEl("button", {
-      cls: "ink-page-indicator",
+      cls: "ink-page-indicator ink-compact-primary",
       text: "1 / 1",
       attr: {
         type: "button",
         title: "Open page manager",
         "aria-label": "Open page manager",
+        "aria-haspopup": "dialog",
+        "aria-expanded": "false",
       },
     });
     this.pageIndicator.onclick = () => this.toggleOverview();
 
     this.nextBtn = pageGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Next page", title: "Next page" },
+      cls: "ink-tb-btn ink-page-detail ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Next page", title: "Next page" },
     });
     setToolIcon(this.nextBtn, "chevron-right");
     this.nextBtn.onclick = () => this.engine.goToPage(this.engine.getPageIndex() + 1);
 
     const addPageBtn = pageGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Add page", title: "Add page (choose paper)" },
+      cls: "ink-tb-btn ink-page-detail ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Add page", title: "Add page (choose paper)" },
     });
     setToolIcon(addPageBtn, "plus");
     addPageBtn.onclick = (e) => this.openAddPageMenu(e);
 
     // Zoom lock: freeze the current zoom so it can't be resized by accident.
     this.lockBtn = pageGroup.createEl("button", {
-      cls: "ink-tb-btn",
-      attr: { "aria-label": "Lock zoom", title: "Lock zoom (stop accidental resizing)" },
+      cls: "ink-tb-btn ink-page-detail ink-compact-secondary",
+      attr: { type: "button", "aria-label": "Lock zoom", title: "Lock zoom (stop accidental resizing)" },
     });
     setToolIcon(this.lockBtn, "lock-open");
     this.lockBtn.onclick = () => {
@@ -883,6 +936,7 @@ export class InkView extends TextFileView implements EngineHost {
   private updateColorChip(): void {
     const dot = this.colorChip?.querySelector<HTMLElement>(".ink-color-chip-dot");
     if (dot) dot.style.backgroundColor = this.currentColor;
+    this.updateCurrentToolSummary();
   }
 
   /** Load a saved pen into the pen tool and switch to it. */
@@ -948,6 +1002,7 @@ export class InkView extends TextFileView implements EngineHost {
   }
 
   private selectTool(tool: CanvasTool): void {
+    if (tool !== this.currentTool) this.penPanel?.close();
     if (this.currentTool === "lasso" && tool !== "lasso") {
       this.engine.clearStrokeSelection();
     }
@@ -984,9 +1039,50 @@ export class InkView extends TextFileView implements EngineHost {
   private syncToolUI(): void {
     for (const [tool, btn] of this.toolButtons) {
       btn.toggleClass("is-active", tool === this.currentTool);
+      btn.setAttribute("aria-pressed", String(tool === this.currentTool));
     }
     // The shape tool lives in the Insert menu, so mirror its active state there.
     this.insertBtn?.toggleClass("is-active", this.currentTool === "shape");
+    this.insertBtn?.setAttribute("aria-pressed", String(this.currentTool === "shape"));
+    this.updateCurrentToolSummary();
+  }
+
+  private updateCurrentToolSummary(): void {
+    if (!this.currentToolButton) return;
+    setToolIcon(this.currentToolIcon, CANVAS_TOOL_ICONS[this.currentTool]);
+    const label = CANVAS_TOOL_LABELS[this.currentTool];
+    this.currentToolName.setText(label);
+    const strokeTool = isStrokeTool(this.currentTool) ? this.currentTool : null;
+    const hasStrokeSettings = strokeTool !== null;
+    const size = strokeTool === null ? null : this.plugin.settings.toolSizes[strokeTool];
+    this.currentToolDetail.setText(
+      size === null ? "Active" : `${unitsToMm(size).toFixed(2)} mm`
+    );
+    const showsColour = hasStrokeSettings && this.currentTool !== "eraser";
+    this.currentToolSwatch.toggleClass("is-hidden", !showsColour);
+    if (showsColour) this.currentToolSwatch.style.backgroundColor = this.currentColor;
+    this.currentToolButton.toggleClass("has-options", hasStrokeSettings);
+    this.currentToolButton.setAttribute("aria-disabled", String(!hasStrokeSettings));
+    this.currentToolButton.setAttribute(
+      "aria-label",
+      hasStrokeSettings ? `${label} settings` : `Current tool: ${label}`
+    );
+    this.currentToolButton.title = hasStrokeSettings
+      ? `${label}: ${this.currentToolDetail.textContent}. Open quick settings`
+      : `Current tool: ${label}`;
+  }
+
+  private syncPenPanelState(open: boolean, tool: ToolType): void {
+    for (const [candidate, button] of this.toolButtons) {
+      button.toggleClass("is-panel-open", open && candidate === tool);
+      button.setAttribute(
+        "aria-expanded",
+        String(open && candidate === tool)
+      );
+    }
+    const currentMatches = open && this.currentTool === tool;
+    this.currentToolButton?.classList.toggle("is-panel-open", currentMatches);
+    this.currentToolButton?.setAttribute("aria-expanded", String(currentMatches));
   }
 
   private updateHistoryButtons(): void {
@@ -996,6 +1092,14 @@ export class InkView extends TextFileView implements EngineHost {
     this.undoBtn?.toggleClass("is-unavailable", cannotUndo);
     this.redoBtn?.toggleClass("is-disabled", cannotRedo);
     this.redoBtn?.toggleClass("is-unavailable", cannotRedo);
+    if (this.undoBtn) {
+      (this.undoBtn as HTMLButtonElement).disabled = cannotUndo;
+      this.undoBtn.setAttribute("aria-disabled", String(cannotUndo));
+    }
+    if (this.redoBtn) {
+      (this.redoBtn as HTMLButtonElement).disabled = cannotRedo;
+      this.redoBtn.setAttribute("aria-disabled", String(cannotRedo));
+    }
   }
 
   private queueStripRefresh(): void {
@@ -1422,8 +1526,18 @@ export class InkView extends TextFileView implements EngineHost {
     if (this.pageIndicator) {
       this.pageIndicator.setText(`${index + 1} / ${count}`);
     }
-    this.prevBtn?.toggleClass("is-disabled", index <= 0);
-    this.nextBtn?.toggleClass("is-disabled", index >= count - 1);
+    const atStart = index <= 0;
+    const atEnd = index >= count - 1;
+    this.prevBtn?.toggleClass("is-disabled", atStart);
+    this.nextBtn?.toggleClass("is-disabled", atEnd);
+    if (this.prevBtn) {
+      (this.prevBtn as HTMLButtonElement).disabled = atStart;
+      this.prevBtn.setAttribute("aria-disabled", String(atStart));
+    }
+    if (this.nextBtn) {
+      (this.nextBtn as HTMLButtonElement).disabled = atEnd;
+      this.nextBtn.setAttribute("aria-disabled", String(atEnd));
+    }
     this.strip?.render();
   }
   onSelectionChange(hasSelection: boolean): void {

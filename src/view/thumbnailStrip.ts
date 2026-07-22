@@ -24,6 +24,7 @@ export interface StripHost {
   onRename(index: number): void;
   onAdd(event: MouseEvent): void;
   onMove(from: number, to: number): void;
+  onVisibilityChange?(visible: boolean): void;
 }
 
 export class ThumbnailStrip {
@@ -77,6 +78,7 @@ export class ThumbnailStrip {
       this.el.hide();
       this.scrim.hide();
     }
+    this.host.onVisibilityChange?.(v);
   }
 
   /** Rebuild all thumbnails. Cheap at thumb size; call on any change. */
