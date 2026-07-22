@@ -1137,11 +1137,15 @@
 
 .ink-toolbar-floating[data-position="top"] {
   top: max(10px, env(safe-area-inset-top));
+  right: auto;
+  bottom: auto;
   left: 50%;
   transform: translateX(-50%);
 }
 
 .ink-toolbar-floating[data-position="bottom"] {
+  top: auto;
+  right: auto;
   bottom: max(14px, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
@@ -1159,11 +1163,15 @@
 }
 
 .ink-toolbar-floating[data-position="left"] {
+  right: auto;
+  bottom: auto;
   left: max(10px, env(safe-area-inset-left));
 }
 
 .ink-toolbar-floating[data-position="right"] {
   right: max(10px, env(safe-area-inset-right));
+  bottom: auto;
+  left: auto;
 }
 
 .ink-toolbar-floating[data-position="left"] .ink-tb-group,

@@ -115,10 +115,10 @@ export class FloatingToolbarController {
   }
 
   setPosition(position: ToolbarPosition): void {
-    if (this.state.position === position) return;
+    const changed = this.state.position !== position;
     this.state.position = position;
     this.applyState();
-    this.persist();
+    if (changed) this.persist();
   }
 
   private applyState(): void {
@@ -134,9 +134,13 @@ export class FloatingToolbarController {
       this.state.floatY = Math.max(VIEW_MARGIN, Math.min(this.state.floatY, maxY));
       this.bar.style.left = `${this.state.floatX}px`;
       this.bar.style.top = `${this.state.floatY}px`;
+      this.bar.style.removeProperty("right");
+      this.bar.style.removeProperty("bottom");
     } else {
       this.bar.style.removeProperty("left");
+      this.bar.style.removeProperty("right");
       this.bar.style.removeProperty("top");
+      this.bar.style.removeProperty("bottom");
     }
   }
 
