@@ -39,6 +39,7 @@ export class NewNoteModal extends Modal {
   onOpen(): void {
     this.titleEl.setText("New ink note");
     const { contentEl } = this;
+    contentEl.addClass("ink-new-note-modal");
 
     new Setting(contentEl).setName("Name").addText((t) => {
       t.setValue(this.name).onChange((v) => (this.name = v));

@@ -340,7 +340,8 @@ export class InkView extends TextFileView implements EngineHost {
 
     // --- Group 1: core drawing tools. Second tap on the active pen-family
     // tool opens its full settings panel (nib, size, stabilization, colour).
-    const toolsGroup = bar.createDiv({ cls: "ink-tb-group" });
+    const toolsGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-tools" });
+    toolsGroup.setAttribute("aria-label", "Drawing tools");
     (Object.keys(STROKE_TOOL_ICONS) as ToolType[]).forEach((tool) => {
       const btn = this.makeToolButton(toolsGroup, tool, STROKE_TOOL_ICONS[tool], TOOL_LABELS[tool]);
       btn.onclick = () => {
@@ -355,7 +356,8 @@ export class InkView extends TextFileView implements EngineHost {
     bar.createDiv({ cls: "ink-tb-sep" });
 
     // --- Group 2: selection & text tools.
-    const selGroup = bar.createDiv({ cls: "ink-tb-group" });
+    const selGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-selection" });
+    selGroup.setAttribute("aria-label", "Selection tools");
     this.makeToolButton(
       selGroup,
       "lasso",
@@ -381,8 +383,10 @@ export class InkView extends TextFileView implements EngineHost {
 
     bar.createDiv({ cls: "ink-tb-sep" });
 
-    // --- Group 3: colour chip (opens the swatch + pen-box popover).
-    this.colorChip = bar.createEl("button", {
+    // --- Group 3: colour and content actions.
+    const contentGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-content" });
+    contentGroup.setAttribute("aria-label", "Colour and insert actions");
+    this.colorChip = contentGroup.createEl("button", {
       cls: "ink-color-chip",
       attr: { "aria-label": "Colour", title: "Colour & pen box" },
     });
@@ -391,7 +395,7 @@ export class InkView extends TextFileView implements EngineHost {
     this.updateColorChip();
 
     // --- Group 4: insert (shapes/table/ruler/sticker/image/pdf).
-    this.insertBtn = bar.createEl("button", {
+    this.insertBtn = contentGroup.createEl("button", {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Insert", title: "Insert shapes, table, image, PDF…" },
     });
@@ -399,7 +403,7 @@ export class InkView extends TextFileView implements EngineHost {
     this.insertBtn.onclick = (e) => this.openInsertMenu(e);
 
     // --- Group 5: overflow (AI, template, overview, export, page ops).
-    const moreBtn = bar.createEl("button", {
+    const moreBtn = contentGroup.createEl("button", {
       cls: "ink-tb-btn",
       attr: { "aria-label": "More", title: "AI tools, paper, export, page actions" },
     });
@@ -409,14 +413,16 @@ export class InkView extends TextFileView implements EngineHost {
     bar.createDiv({ cls: "ink-tb-sep" });
 
     // --- Group 6: history.
-    this.undoBtn = bar.createEl("button", {
+    const historyGroup = bar.createDiv({ cls: "ink-tb-group ink-tb-history" });
+    historyGroup.setAttribute("aria-label", "History");
+    this.undoBtn = historyGroup.createEl("button", {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Undo", title: "Undo (Ctrl/Cmd+Z)" },
     });
     setToolIcon(this.undoBtn, "undo-2");
     this.undoBtn.onclick = () => this.engine.undo();
 
-    this.redoBtn = bar.createEl("button", {
+    this.redoBtn = historyGroup.createEl("button", {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Redo", title: "Redo (Shift+Ctrl/Cmd+Z)" },
     });
@@ -427,6 +433,7 @@ export class InkView extends TextFileView implements EngineHost {
 
     // --- Group 7: page navigation.
     const pageGroup = bar.createDiv({ cls: "ink-tb-group ink-page-group" });
+    pageGroup.setAttribute("aria-label", "Page navigation");
     this.prevBtn = pageGroup.createEl("button", {
       cls: "ink-tb-btn",
       attr: { "aria-label": "Previous page", title: "Previous page" },

@@ -82,6 +82,17 @@ export class PenPanel {
     const isPenFamily = tool === "pen" || tool === "pencil";
     const cfg = isPenFamily ? this.host.settings.penConfigs[tool] : null;
 
+    const header = panel.createDiv({ cls: "ink-panel-header" });
+    const heading = header.createDiv({ cls: "ink-panel-heading" });
+    heading.createDiv({
+      cls: "ink-panel-title",
+      text: tool === "highlighter" ? "Highlighter" : tool === "eraser" ? "Eraser" : tool === "pencil" ? "Pencil" : "Pen",
+    });
+    heading.createDiv({
+      cls: "ink-panel-subtitle",
+      text: tool === "eraser" ? "Adjust eraser width" : "Tune the feel of your stroke",
+    });
+
     // --- live preview ---
     if (tool !== "eraser") {
       this.previewCanvas = panel.createEl("canvas", { cls: "ink-pen-preview" });
@@ -91,6 +102,7 @@ export class PenPanel {
 
     // --- nib row ---
     if (isPenFamily && cfg) {
+      panel.createDiv({ cls: "ink-section-label", text: "Nib style" });
       const nibRow = panel.createDiv({ cls: "ink-nib-row" });
       (Object.keys(NIB_LABELS) as NibStyle[]).forEach((nib) => {
         const btn = nibRow.createEl("button", {
@@ -116,6 +128,7 @@ export class PenPanel {
     }
 
     // --- sliders ---
+    panel.createDiv({ cls: "ink-section-label", text: "Stroke controls" });
     const sliders = panel.createDiv({ cls: "ink-pen-sliders" });
 
     if (isPenFamily && cfg) {
@@ -146,6 +159,7 @@ export class PenPanel {
 
     // --- colours ---
     if (tool !== "eraser") {
+      panel.createDiv({ cls: "ink-section-label", text: "Colour" });
       const swatchRow = panel.createDiv({ cls: "ink-pen-swatches" });
       for (const color of this.host.settings.recentColors) {
         const sw = swatchRow.createEl("button", {

@@ -50,6 +50,11 @@ export class StickerPicker {
     panel.style.top = `${aRect.bottom - rootRect.top + 6}px`;
     panel.style.left = `${Math.max(8, Math.min(aRect.left - rootRect.left, rootRect.width - 300))}px`;
 
+    const header = panel.createDiv({ cls: "ink-panel-header" });
+    const heading = header.createDiv({ cls: "ink-panel-heading" });
+    heading.createDiv({ cls: "ink-panel-title", text: "Stickers" });
+    heading.createDiv({ cls: "ink-panel-subtitle", text: "Add a visual marker to this page" });
+
     const grid = panel.createDiv({ cls: "ink-sticker-grid" });
     for (const emoji of CURATED) {
       const btn = grid.createEl("button", { cls: "ink-sticker-btn", text: emoji });

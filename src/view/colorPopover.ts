@@ -64,6 +64,11 @@ export class ColorPopover {
       Math.min(aRect.left - rootRect.left - 90, rootRect.width - 236)
     )}px`;
 
+    const header = panel.createDiv({ cls: "ink-panel-header" });
+    const heading = header.createDiv({ cls: "ink-panel-heading" });
+    heading.createDiv({ cls: "ink-panel-title", text: "Ink colour" });
+    heading.createDiv({ cls: "ink-panel-subtitle", text: "Recent colours and saved pens" });
+
     // --- swatches ---
     const swatches = panel.createDiv({ cls: "ink-pop-swatches" });
     const current = this.host.getColor().toLowerCase();
