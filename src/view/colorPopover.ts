@@ -1,3 +1,4 @@
+import { mountFloatingSurface } from "./floatingSurface";
 import { Menu, setIcon } from "obsidian";
 import type { InkStudioSettings, PenPreset } from "../settings";
 
@@ -17,11 +18,8 @@ export class ColorPopover {
   private root: HTMLElement;
   private host: ColorPopoverHost;
   private el: HTMLElement | null = null;
-  private dismiss = (e: PointerEvent): void => {
-    if (!this.el) return;
-    if (this.el.contains(e.target as Node)) return;
-    this.close();
-  };
+  private pressCleanups: Array<() => void> = [];
+  private disposeSurface: (() => void) | null = null;
 
   constructor(root: HTMLElement, host: ColorPopoverHost) {
     this.root = root;
@@ -33,7 +31,9 @@ export class ColorPopover {
   }
 
   close(): void {
-    document.removeEventListener("pointerdown", this.dismiss, true);
+    this.pressCleanups.splice(0).forEach(cleanup => cleanup());
+    this.disposeSurface?.();
+    this.disposeSurface = null;
     this.el?.remove();
     this.el = null;
   }
@@ -56,14 +56,6 @@ export class ColorPopover {
     const panel = this.root.createDiv({ cls: "ink-color-popover" });
     this.el = panel;
 
-    const rootRect = this.root.getBoundingClientRect();
-    const aRect = anchor.getBoundingClientRect();
-    panel.style.top = `${aRect.bottom - rootRect.top + 8}px`;
-    panel.style.left = `${Math.max(
-      8,
-      Math.min(aRect.left - rootRect.left - 90, rootRect.width - 236)
-    )}px`;
-
     const header = panel.createDiv({ cls: "ink-panel-header" });
     const heading = header.createDiv({ cls: "ink-panel-heading" });
     heading.createDiv({ cls: "ink-panel-title", text: "Ink colour" });
@@ -78,10 +70,11 @@ export class ColorPopover {
         attr: { title: color, "aria-label": `Colour ${color}` },
       });
       sw.style.backgroundColor = color;
+      sw.setAttribute("aria-pressed", String(color.toLowerCase() === current));
       if (color.toLowerCase() === current) sw.addClass("is-active");
       sw.onclick = () => {
         this.host.setColor(color, false);
-        this.open(anchor); // reflect the new active swatch
+        // Host refreshes the current surface.
       };
     }
     const add = swatches.createEl("button", {
@@ -95,9 +88,18 @@ export class ColorPopover {
     }) as HTMLInputElement;
     hidden.value = this.host.getColor();
     add.onclick = () => hidden.click();
-    hidden.oninput = () => {
+    hidden.onchange = () => {
       this.host.setColor(hidden.value, true);
-      this.open(anchor);
+    };
+
+    const detail = panel.createEl("label", { cls: "ink-color-detail", text: "HEX" });
+    const hex = detail.createEl("input", { attr: { type: "text", "aria-label": "Hex colour", maxlength: "7", spellcheck: "false" } });
+    hex.value = this.host.getColor();
+    hex.onchange = () => {
+      const value = hex.value.startsWith("#") ? hex.value : `#${hex.value}`;
+      const valid = /^#[0-9a-f]{6}$/i.test(value);
+      hex.setAttribute("aria-invalid", String(!valid));
+      if (valid) this.host.setColor(value, true);
     };
 
     // --- pen box ---
@@ -134,13 +136,23 @@ export class ColorPopover {
           e.preventDefault();
           remove(e.clientX, e.clientY);
         };
-        chip.addEventListener("pointerdown", (e: PointerEvent) => {
-          if (e.pointerType !== "touch") return;
-          const timer = window.setTimeout(() => remove(e.clientX, e.clientY), 550);
-          const cancel = () => window.clearTimeout(timer);
-          chip.addEventListener("pointerup", cancel, { once: true });
-          chip.addEventListener("pointerleave", cancel, { once: true });
+        let timer: number | undefined;
+        let held = false;
+        const cancel = () => { window.clearTimeout(timer); timer = undefined; };
+        chip.addEventListener("pointerdown", (event: PointerEvent) => {
+          cancel(); held = false;
+          if (event.pointerType === "touch") timer = window.setTimeout(() => {
+            held = true; remove(event.clientX, event.clientY);
+          }, 550);
         });
+        for (const type of ["pointerup", "pointerleave", "pointercancel"]) chip.addEventListener(type, cancel);
+        chip.addEventListener("click", event => {
+          if (held) { event.preventDefault(); event.stopImmediatePropagation(); held = false; }
+        }, true);
+        this.pressCleanups.push(cancel);
+        // Context menu also works with the keyboard menu key / Shift+F10.
+        chip.setAttribute("aria-label", `Saved ${preset.nib} pen, ${preset.color}. Context menu to remove`);
+
       }
     }
 
@@ -149,9 +161,6 @@ export class ColorPopover {
       text: "Tip: tap the active pen again for nib, size & stabilization.",
     });
 
-    window.setTimeout(
-      () => document.addEventListener("pointerdown", this.dismiss, true),
-      0
-    );
+    this.disposeSurface = mountFloatingSurface(this.root, panel, anchor, () => this.close());
   }
 }

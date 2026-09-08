@@ -33,7 +33,7 @@ export class OcrResultModal extends Modal {
 
     const area = contentEl.createEl("textarea", {
       cls: "ink-text-modal-area",
-      attr: { rows: "8" },
+      attr: { rows: "8", "aria-label": "Transcription" },
     }) as HTMLTextAreaElement;
     area.value = this.text;
     area.oninput = () => (this.text = area.value);

@@ -1,3 +1,4 @@
+import { clamp, observeFloating, visibleBoundary } from "./floatingPosition";
 import { Menu } from "obsidian";
 import { setToolIcon } from "./icons";
 
@@ -47,7 +48,7 @@ export class FloatingToolbarController {
   private compactButton: HTMLButtonElement;
   private hideButton: HTMLButtonElement;
   private revealButton: HTMLButtonElement;
-  private resizeObserver: ResizeObserver;
+  private disposeLayout: () => void;
 
   constructor(
     root: HTMLElement,
@@ -107,15 +108,12 @@ export class FloatingToolbarController {
     setToolIcon(this.revealButton, "panel-top-open");
     this.revealButton.onclick = () => this.setMode("full");
 
-    this.resizeObserver = new ResizeObserver(() => {
-      if (this.state.position === "floating") this.applyState();
-    });
-    this.resizeObserver.observe(this.root);
+    this.disposeLayout = observeFloating(this.root, [this.bar], () => this.layout());
     this.applyState();
   }
 
   destroy(): void {
-    this.resizeObserver.disconnect();
+    this.disposeLayout();
   }
 
   getState(): FloatingToolbarState {
@@ -146,23 +144,34 @@ export class FloatingToolbarController {
       `Choose toolbar position. Current: ${POSITION_LABELS[this.state.position]}`
     );
 
-    if (this.state.position === "floating") {
-      const rect = this.root.getBoundingClientRect();
-      const barRect = this.bar.getBoundingClientRect();
-      const maxX = Math.max(VIEW_MARGIN, rect.width - barRect.width - VIEW_MARGIN);
-      const maxY = Math.max(VIEW_MARGIN, rect.height - barRect.height - VIEW_MARGIN);
-      this.state.floatX = Math.max(VIEW_MARGIN, Math.min(this.state.floatX, maxX));
-      this.state.floatY = Math.max(VIEW_MARGIN, Math.min(this.state.floatY, maxY));
-      this.bar.style.left = `${this.state.floatX}px`;
-      this.bar.style.top = `${this.state.floatY}px`;
-      this.bar.style.removeProperty("right");
-      this.bar.style.removeProperty("bottom");
-    } else {
-      this.bar.style.removeProperty("left");
-      this.bar.style.removeProperty("right");
-      this.bar.style.removeProperty("top");
-      this.bar.style.removeProperty("bottom");
-    }
+    this.layout();
+  }
+
+  private layout(): void {
+    const bounds = visibleBoundary(this.root);
+    const origin = this.root.getBoundingClientRect();
+    this.root.classList.toggle("is-narrow", origin.width < 600);
+    const vertical = this.state.position === "left" || this.state.position === "right";
+    this.bar.style.maxWidth = `${Math.max(0, Math.min(vertical ? 64 : Infinity, bounds.width - VIEW_MARGIN * 2))}px`;
+    this.bar.style.maxHeight = `${Math.max(0, bounds.height - VIEW_MARGIN * 2)}px`;
+    const size = this.bar.getBoundingClientRect();
+    const minX = bounds.left - origin.left + VIEW_MARGIN;
+    const minY = bounds.top - origin.top + VIEW_MARGIN;
+    const maxX = bounds.left - origin.left + bounds.width - size.width - VIEW_MARGIN;
+    const maxY = bounds.top - origin.top + bounds.height - size.height - VIEW_MARGIN;
+    let x = (minX + maxX) / 2, y = (minY + maxY) / 2;
+    if (this.state.position === "top") y = minY;
+    if (this.state.position === "bottom") y = maxY;
+    if (this.state.position === "left") x = minX;
+    if (this.state.position === "right") x = maxX;
+    if (this.state.position === "floating") { x = this.state.floatX; y = this.state.floatY; }
+    // Clamp the display, preserving the saved preference for when space returns.
+    this.bar.style.left = `${clamp(x, minX, maxX)}px`;
+    this.bar.style.top = `${clamp(y, minY, maxY)}px`;
+    this.bar.style.right = "auto";
+    this.bar.style.bottom = "auto";
+    this.bar.style.transform = "none";
+    this.root.dispatchEvent(new Event("ink-toolbar-layout"));
   }
 
   private persist(): void {
@@ -171,7 +180,7 @@ export class FloatingToolbarController {
 
   private openPositionMenu(event: MouseEvent): void {
     const menu = new Menu();
-    const choices: ToolbarPosition[] = ["top", "bottom", "left", "right"];
+    const choices: ToolbarPosition[] = ["top", "bottom", "left", "right", "floating"];
     for (const position of choices) {
       menu.addItem((item) =>
         item

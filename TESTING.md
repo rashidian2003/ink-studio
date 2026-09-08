@@ -56,3 +56,9 @@ Repeat navigation, draw, erase, undo and zoom checks with approximately 100,
 eraser stalls and memory growth after 60+ edits. The automated suite includes a
 10,000-stroke parse guard; canvas frame rate and device memory still require
 manual testing inside Obsidian because they depend on the WebView and GPU.
+
+## Floating UI regression matrix
+
+See [UI modernization verification](docs/UI-MODERNIZATION.md) for root causes,
+coverage, browser-harness instructions and remaining physical-device checks.
+`npm test` includes the pure positioning edge/flip/oversize/split-pane tests.

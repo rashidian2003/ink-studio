@@ -202,6 +202,17 @@ export class CanvasEngine {
   private liveCtx!: CanvasRenderingContext2D;
 
   private dpr = 1;
+  private densityQuery: MediaQueryList | null = null;
+  private densityChanged = (): void => {
+    this.watchDensity();
+    this.layout();
+  };
+  private watchDensity(): void {
+    this.densityQuery?.removeEventListener("change", this.densityChanged);
+    const win = this.live?.ownerDocument.defaultView ?? window;
+    this.densityQuery = win.matchMedia(`(resolution: ${win.devicePixelRatio}dppx)`);
+    this.densityQuery.addEventListener("change", this.densityChanged, { once: true });
+  }
   /** Scale that fits the whole page in the viewport (page units → CSS px). */
   private fitScale = 1;
   /** User zoom on top of fitScale: 1 = whole page visible, up to MAX_ZOOM. */
@@ -371,10 +382,13 @@ export class CanvasEngine {
 
     this.resizeObserver = new ResizeObserver(() => this.layout());
     this.resizeObserver.observe(container);
+    this.watchDensity();
     this.layout();
   }
 
   destroy(): void {
+    this.densityQuery?.removeEventListener("change", this.densityChanged);
+    this.densityQuery = null;
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     if (this.liveRedrawFrame !== null) {
@@ -527,7 +541,7 @@ export class CanvasEngine {
     // a pan/zoom transform. Pixel buffers stay viewport-sized, so zooming
     // never explodes canvas memory, and ink re-renders vector-crisp at any
     // zoom level.
-    this.dpr = window.devicePixelRatio || 1;
+    this.dpr = this.live.ownerDocument.defaultView?.devicePixelRatio || 1;
     for (const c of [this.base, this.live]) {
       c.style.width = `${availW}px`;
       c.style.height = `${availH}px`;
@@ -630,8 +644,8 @@ export class CanvasEngine {
     this.baseCtx.save();
     this.baseCtx.fillStyle = darkPaper ? DARK_PAPER : LIGHT_PAPER;
     this.baseCtx.shadowColor = "rgba(0, 0, 0, 0.35)";
-    this.baseCtx.shadowBlur = 12;
-    this.baseCtx.shadowOffsetY = 3;
+    this.baseCtx.shadowBlur = 12 * this.dpr;
+    this.baseCtx.shadowOffsetY = 3 * this.dpr;
     this.paperPath(this.baseCtx);
     this.baseCtx.fill();
     this.baseCtx.shadowColor = "transparent";

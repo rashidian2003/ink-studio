@@ -1,3 +1,4 @@
+import { mountFloatingSurface } from "./floatingSurface";
 import { setToolIcon } from "./icons";
 import type {
   NibStyle,
@@ -16,6 +17,7 @@ import {
 import { drawStroke, defaultOpacity, NIB_LABELS } from "../canvas/strokeRender";
 import {
   applyPressureCurve,
+  combinePressureAndSpeed,
   constrainPressureRange,
   smoothPressure,
 } from "../canvas/inkProcessing";
@@ -126,12 +128,7 @@ export class PenPanel {
   private el: HTMLElement | null = null;
   private tool: ToolType = "pen";
   private previewCanvas: HTMLCanvasElement | null = null;
-  private dismiss = (e: PointerEvent): void => {
-    if (!this.el) return;
-    const t = e.target as Node;
-    if (this.el.contains(t)) return;
-    this.close();
-  };
+  private disposeSurface: (() => void) | null = null;
 
   constructor(root: HTMLElement, host: PenPanelHost) {
     this.root = root;
@@ -144,7 +141,8 @@ export class PenPanel {
 
   close(): void {
     const wasOpen = this.el !== null;
-    document.removeEventListener("pointerdown", this.dismiss, true);
+    this.disposeSurface?.();
+    this.disposeSurface = null;
     this.el?.remove();
     this.el = null;
     this.previewCanvas = null;
@@ -161,6 +159,7 @@ export class PenPanel {
   }
 
   open(anchor: HTMLElement, tool: ToolType): void {
+    this.close();
     this.tool = tool;
     const panel = this.root.createDiv({ cls: "ink-pen-panel" });
     this.el = panel;
@@ -183,8 +182,7 @@ export class PenPanel {
     // --- live preview ---
     if (tool !== "eraser") {
       this.previewCanvas = panel.createEl("canvas", { cls: "ink-pen-preview" });
-      this.previewCanvas.width = 300;
-      this.previewCanvas.height = 64;
+      this.previewCanvas.setAttribute("aria-label", "Live stroke preview");
     }
 
     // --- nib row ---
@@ -198,6 +196,7 @@ export class PenPanel {
         });
         setToolIcon(btn, NIB_ICONS[nib]);
         btn.toggleClass("is-active", cfg.nib === nib);
+        btn.setAttribute("aria-pressed", String(cfg.nib === nib));
         btn.onclick = () => {
           cfg.nib = nib;
           nibRow
@@ -208,6 +207,7 @@ export class PenPanel {
                 (Object.keys(NIB_LABELS) as NibStyle[])[i] === nib
               )
             );
+          nibRow.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.classList.contains("is-active"))));
           this.host.onConfigChanged();
           this.paintPreview();
         };
@@ -235,10 +235,14 @@ export class PenPanel {
     // --- sliders ---
     panel.createDiv({ cls: "ink-section-label", text: "Stroke controls" });
     const sliders = panel.createDiv({ cls: "ink-pen-sliders" });
+    const advanced = panel.createEl("details", { cls: "ink-pen-advanced" });
+    advanced.createEl("summary", { text: "Advanced dynamics" });
+    const dynamics = advanced.createDiv({ cls: "ink-pen-sliders" });
+    if (!cfg) advanced.remove();
 
     if (isPenFamily && cfg) {
       this.select(
-        sliders,
+        dynamics,
         "Pressure curve",
         {
           soft: "Soft",
@@ -260,15 +264,16 @@ export class PenPanel {
         this.paintPreview();
       }, `${cfg.pressurePct}%`);
 
-      this.slider(sliders, "Pressure smoothing", 0, 100, cfg.pressureSmoothingPct, (v, label) => {
+      this.slider(dynamics, "Pressure smoothing", 0, 100, cfg.pressureSmoothingPct, (v, label) => {
         cfg.pressureSmoothingPct = v;
         label.setText(`${v}%`);
         this.host.onConfigChanged();
         this.paintPreview();
       }, `${cfg.pressureSmoothingPct}%`);
 
-      this.slider(sliders, "Speed effect", 0, 100, cfg.speedEffectPct, (v, label) => {
+      this.slider(dynamics, "Speed effect", 0, 100, cfg.speedEffectPct, (v, label) => {
         cfg.speedEffectPct = v;
+        this.paintPreview();
         label.setText(`${v}%`);
         this.host.onConfigChanged();
       }, `${cfg.speedEffectPct}%`);
@@ -285,7 +290,7 @@ export class PenPanel {
 
     if (isPenFamily && cfg) {
       this.select(
-        sliders,
+        dynamics,
         "Path smoothing",
         {
           raw: "Raw",
@@ -303,32 +308,33 @@ export class PenPanel {
       );
       this.slider(sliders, "Stroke stabilization", 0, 100, cfg.stabilizationPct, (v, label) => {
         cfg.stabilizationPct = v;
+        this.paintPreview();
         label.setText(`${v}%`);
         this.host.onConfigChanged();
       }, `${cfg.stabilizationPct}%`);
 
-      this.slider(sliders, "Minimum width", 0, 100, cfg.minWidthPct, (v, label) => {
+      this.slider(dynamics, "Minimum width", 0, 100, cfg.minWidthPct, (v, label) => {
         cfg.minWidthPct = Math.min(v, cfg.maxWidthPct);
         label.setText(`${cfg.minWidthPct}%`);
         this.host.onConfigChanged();
         this.paintPreview();
       }, `${cfg.minWidthPct}%`);
 
-      this.slider(sliders, "Maximum width", 1, 100, cfg.maxWidthPct, (v, label) => {
+      this.slider(dynamics, "Maximum width", 1, 100, cfg.maxWidthPct, (v, label) => {
         cfg.maxWidthPct = Math.max(v, cfg.minWidthPct);
         label.setText(`${cfg.maxWidthPct}%`);
         this.host.onConfigChanged();
         this.paintPreview();
       }, `${cfg.maxWidthPct}%`);
 
-      this.slider(sliders, "Start taper", 0, 100, cfg.taperStartPct, (v, label) => {
+      this.slider(dynamics, "Start taper", 0, 100, cfg.taperStartPct, (v, label) => {
         cfg.taperStartPct = v;
         label.setText(`${v}%`);
         this.host.onConfigChanged();
         this.paintPreview();
       }, `${cfg.taperStartPct}%`);
 
-      this.slider(sliders, "End taper", 0, 100, cfg.taperEndPct, (v, label) => {
+      this.slider(dynamics, "End taper", 0, 100, cfg.taperEndPct, (v, label) => {
         cfg.taperEndPct = v;
         label.setText(`${v}%`);
         this.host.onConfigChanged();
@@ -343,7 +349,7 @@ export class PenPanel {
       for (const color of this.host.settings.recentColors) {
         const sw = swatchRow.createEl("button", {
           cls: "ink-swatch",
-          attr: { title: color },
+          attr: { title: color, "aria-label": `Colour ${color}` },
         });
         sw.style.backgroundColor = color;
         sw.toggleClass(
@@ -372,7 +378,7 @@ export class PenPanel {
       }) as HTMLInputElement;
       hidden.value = this.host.getColor();
       addColor.onclick = () => hidden.click();
-      hidden.oninput = () => {
+      hidden.onchange = () => {
         this.host.setColor(hidden.value, true);
         this.paintPreview();
         // Re-open to refresh the swatch row with the new colour first.
@@ -401,40 +407,8 @@ export class PenPanel {
       };
     }
 
-    this.paintPreview();
-    this.positionNear(anchor);
-    panel.style.removeProperty("visibility");
+    this.disposeSurface = mountFloatingSurface(this.root, panel, anchor, () => this.close(), () => this.paintPreview());
     this.host.onOpenChange?.(true, tool);
-    // Defer so the opening tap doesn't immediately dismiss the panel.
-    window.setTimeout(
-      () => document.addEventListener("pointerdown", this.dismiss, true),
-      0
-    );
-  }
-
-  /** Place the panel above or below its anchor and keep it inside the note. */
-  private positionNear(anchor: HTMLElement): void {
-    const panel = this.el;
-    if (!panel) return;
-    const margin = 8;
-    const gap = 8;
-    const rootRect = this.root.getBoundingClientRect();
-    const anchorRect = anchor.getBoundingClientRect();
-    const panelRect = panel.getBoundingClientRect();
-    const maxLeft = Math.max(margin, rootRect.width - panelRect.width - margin);
-    const left = Math.max(
-      margin,
-      Math.min(anchorRect.left - rootRect.left, maxLeft)
-    );
-    const below = rootRect.bottom - anchorRect.bottom - gap;
-    const above = anchorRect.top - rootRect.top - gap;
-    const preferredTop =
-      panelRect.height <= below || below >= above
-        ? anchorRect.bottom - rootRect.top + gap
-        : anchorRect.top - rootRect.top - panelRect.height - gap;
-    const maxTop = Math.max(margin, rootRect.height - panelRect.height - margin);
-    panel.style.left = `${left}px`;
-    panel.style.top = `${Math.max(margin, Math.min(preferredTop, maxTop))}px`;
   }
 
   private slider(
@@ -455,7 +429,18 @@ export class PenPanel {
       cls: "ink-pen-slider",
     }) as HTMLInputElement;
     input.value = String(value);
-    input.oninput = () => onInput(parseInt(input.value, 10), valueLabel);
+    input.setAttribute("aria-label", name);
+    const update = () => {
+      input.style.setProperty("--ink-slider-progress", `${(Number(input.value) - min) / (max - min) * 100}%`);
+      input.setAttribute("aria-valuetext", valueLabel.textContent ?? input.value);
+    };
+    update();
+    input.oninput = () => {
+      onInput(parseInt(input.value, 10), valueLabel);
+      // Width limits may constrain the requested value.
+      if (name === "Minimum width" || name === "Maximum width") input.value = String(parseInt(valueLabel.textContent ?? input.value, 10));
+      update();
+    };
   }
 
   private select(
@@ -469,6 +454,7 @@ export class PenPanel {
     const head = row.createDiv({ cls: "ink-slider-head" });
     head.createSpan({ cls: "ink-slider-name", text: name });
     const select = row.createEl("select", { cls: "dropdown ink-pen-select" });
+    select.setAttribute("aria-label", name);
     for (const [optionValue, label] of Object.entries(options)) {
       const option = select.createEl("option", {
         text: label,
@@ -484,10 +470,16 @@ export class PenPanel {
     const canvas = this.previewCanvas;
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const width = canvas.clientWidth || 300, height = 80;
+    const dpr = canvas.ownerDocument.defaultView?.devicePixelRatio || 1;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // A split light/dark paper sample preserves exact ink colours, including white.
+    ctx.fillStyle = "#f5f3ee";
+    ctx.fillRect(0, 0, width / 2, height);
+    ctx.fillStyle = "#30343b";
+    ctx.fillRect(width / 2, 0, width / 2, height);
 
     const tool = this.tool;
     const isPenFamily = tool === "pen" || tool === "pencil";
@@ -497,16 +489,19 @@ export class PenPanel {
     let previousPressure: number | null = null;
     for (let i = 0; i <= n; i++) {
       const t = i / n;
-      const x = 16 + t * (canvas.width - 32);
-      const y =
-        canvas.height / 2 +
-        Math.sin(t * Math.PI * 2.2) * (canvas.height / 2 - 14);
+      const x = 16 + t * (width - 32);
+      let y = height / 2 + Math.sin(t * Math.PI * 2.2) * (height / 2 - 14) + Math.sin(t * 65) * 2;
+      if (cfg && points.length) {
+        const alpha = 1 - cfg.stabilizationPct / 100 * 0.9;
+        y = points[points.length - 1].y + alpha * (y - points[points.length - 1].y);
+      }
       // Pressure ramps up then eases off, so thinning is visible end-to-end.
       let p = 0.25 + 0.65 * Math.sin(t * Math.PI);
       if (cfg) {
         p = applyPressureCurve(p, cfg.pressureCurve, cfg.customPressureCurve);
         p = smoothPressure(previousPressure, p, cfg.pressureSmoothingPct);
         previousPressure = p;
+        p = combinePressureAndSpeed(p, 0.3 + t * 1.5, cfg.speedEffectPct);
         p = constrainPressureRange(p, cfg.minWidthPct, cfg.maxWidthPct);
       }
       points.push({ x, y, p });

@@ -36,7 +36,7 @@ export class TextBoxModal extends Modal {
 
     const area = contentEl.createEl("textarea", {
       cls: "ink-text-modal-area",
-      attr: { rows: "5", placeholder: "Type here…" },
+      attr: { "aria-label": "Note text", rows: "5", placeholder: "Type here…" },
     }) as HTMLTextAreaElement;
     area.value = this.text;
     area.oninput = () => (this.text = area.value);

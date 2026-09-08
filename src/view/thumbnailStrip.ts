@@ -91,6 +91,18 @@ export class ThumbnailStrip {
 
     pages.forEach((page, index) => {
       const item = this.body.createDiv({ cls: "ink-thumb" });
+      item.tabIndex = 0;
+      item.setAttribute("role", "group");
+      item.setAttribute("aria-label", page.name || `Page ${index + 1}`);
+      item.setAttribute("aria-current", String(index === current));
+      item.onkeydown = event => {
+        if (event.target !== item) return;
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this.host.onSelect(index); }
+        if (event.altKey && ["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+          event.preventDefault();
+          this.host.onMove(index, Math.max(0, Math.min(pages.length - 1, index + (["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 1))));
+        }
+      };
       if (index === current) item.addClass("is-current");
 
       const canvas = renderPageToCanvas(page, {
@@ -112,7 +124,7 @@ export class ThumbnailStrip {
         text: page.name || `Page ${index + 1}`,
       });
 
-      const menuBtn = item.createDiv({ cls: "ink-thumb-menu" });
+      const menuBtn = item.createEl("button", { cls: "ink-thumb-menu", attr: { type: "button", "aria-label": `Page ${index + 1} actions` } });
       setToolIcon(menuBtn, "more-vertical");
       menuBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
       menuBtn.addEventListener("click", (e) => {
@@ -151,11 +163,12 @@ export class ThumbnailStrip {
       const startX = e.clientX;
       const startY = e.clientY;
       let dragging = false;
+      const vertical = getComputedStyle(this.body).flexDirection === "column";
+      item.setPointerCapture(e.pointerId);
 
       const onMove = (ev: PointerEvent) => {
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
-        const vertical = getComputedStyle(this.body).flexDirection === "column";
         const delta = vertical ? dy : dx;
         if (!dragging && Math.abs(delta) > DRAG_THRESHOLD) {
           dragging = true;
@@ -175,6 +188,8 @@ export class ThumbnailStrip {
         item.removeEventListener("pointercancel", onUp);
         item.style.transform = "";
         item.removeClass("is-dragging");
+        if (item.hasPointerCapture(e.pointerId)) item.releasePointerCapture(e.pointerId);
+        if (ev.type === "pointercancel") return;
         if (!dragging) {
           if (ev.type === "pointerup") this.host.onSelect(index);
           return;
