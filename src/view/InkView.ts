@@ -292,7 +292,6 @@ export class InkView extends TextFileView implements EngineHost {
       onConfigChanged: () => {
         this.plugin.saveSettingsDebounced();
         this.syncToolUI();
-        this.engine.refresh();
       },
       addPreset: (preset: PenPreset) => {
         this.plugin.settings.penPresets.push(preset);
@@ -400,6 +399,8 @@ export class InkView extends TextFileView implements EngineHost {
         target &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          !!target.closest(".ink-floating-surface") ||
           target.isContentEditable)
       ) {
         return;

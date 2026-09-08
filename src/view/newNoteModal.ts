@@ -67,7 +67,7 @@ export class NewNoteModal extends Modal {
     contentEl.createEl("div", { cls: "ink-pop-label", text: "Paper" });
     const grid = contentEl.createDiv({ cls: "ink-template-grid" });
     (Object.keys(TEMPLATE_LABELS) as TemplateKind[]).forEach((kind) => {
-      const cell = grid.createDiv({ cls: "ink-template-cell" });
+      const cell = grid.createEl("button", { cls: "ink-template-cell", attr: { type: "button", "aria-label": TEMPLATE_LABELS[kind] } });
       const preview = cell.createEl("canvas", { cls: "ink-template-preview" });
       preview.width = 90;
       preview.height = 120;
@@ -108,12 +108,15 @@ export class NewNoteModal extends Modal {
   }
 
   private paintPreview(canvas: HTMLCanvasElement, kind: TemplateKind): void {
+    const dpr = canvas.ownerDocument.defaultView?.devicePixelRatio || 1;
+    canvas.width = Math.round(90 * dpr);
+    canvas.height = Math.round(120 * dpr);
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(0.25, 0, 0, 0.25, 0, 0);
-    drawTemplate(ctx, { kind, spacing: this.spacing }, canvas.width * 4, canvas.height * 4);
+    ctx.setTransform(0.25 * dpr, 0, 0, 0.25 * dpr, 0, 0);
+    drawTemplate(ctx, { kind, spacing: this.spacing }, 360, 480);
   }
 
   private repaintPreviews(): void {
@@ -126,6 +129,7 @@ export class NewNoteModal extends Modal {
   private syncSelection(): void {
     for (const [kind, cell] of this.kindButtons) {
       cell.toggleClass("is-selected", kind === this.kind);
+      cell.setAttribute("aria-pressed", String(kind === this.kind));
     }
   }
 

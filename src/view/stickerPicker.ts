@@ -1,3 +1,4 @@
+import { mountFloatingSurface } from "./floatingSurface";
 // Emoji sticker picker popover: curated grid + free input for anything else.
 
 const CURATED = [
@@ -12,11 +13,7 @@ export class StickerPicker {
   private root: HTMLElement;
   private onPick: (emoji: string) => void;
   private el: HTMLElement | null = null;
-  private dismiss = (e: PointerEvent): void => {
-    if (!this.el) return;
-    if (this.el.contains(e.target as Node)) return;
-    this.close();
-  };
+  private disposeSurface: (() => void) | null = null;
 
   constructor(root: HTMLElement, onPick: (emoji: string) => void) {
     this.root = root;
@@ -28,7 +25,8 @@ export class StickerPicker {
   }
 
   close(): void {
-    document.removeEventListener("pointerdown", this.dismiss, true);
+    this.disposeSurface?.();
+    this.disposeSurface = null;
     this.el?.remove();
     this.el = null;
   }
@@ -42,13 +40,9 @@ export class StickerPicker {
   }
 
   open(anchor: HTMLElement): void {
+    this.close();
     const panel = this.root.createDiv({ cls: "ink-sticker-panel" });
     this.el = panel;
-
-    const rootRect = this.root.getBoundingClientRect();
-    const aRect = anchor.getBoundingClientRect();
-    panel.style.top = `${aRect.bottom - rootRect.top + 6}px`;
-    panel.style.left = `${Math.max(8, Math.min(aRect.left - rootRect.left, rootRect.width - 300))}px`;
 
     const header = panel.createDiv({ cls: "ink-panel-header" });
     const heading = header.createDiv({ cls: "ink-panel-heading" });
@@ -57,7 +51,7 @@ export class StickerPicker {
 
     const grid = panel.createDiv({ cls: "ink-sticker-grid" });
     for (const emoji of CURATED) {
-      const btn = grid.createEl("button", { cls: "ink-sticker-btn", text: emoji });
+      const btn = grid.createEl("button", { cls: "ink-sticker-btn", text: emoji, attr: { "aria-label": `Insert ${emoji}` } });
       btn.onclick = () => {
         this.onPick(emoji);
         this.close();
@@ -67,7 +61,7 @@ export class StickerPicker {
     // Free input: any emoji from the OS keyboard.
     const row = panel.createDiv({ cls: "ink-sticker-input-row" });
     const input = row.createEl("input", {
-      attr: { type: "text", placeholder: "Any emoji…", maxlength: "8" },
+      attr: { type: "text", placeholder: "Any emoji…", maxlength: "8", "aria-label": "Custom emoji" },
       cls: "ink-sticker-input",
     }) as HTMLInputElement;
     const add = row.createEl("button", { text: "Add", cls: "mod-cta" });
@@ -83,9 +77,6 @@ export class StickerPicker {
       if (e.key === "Enter") commit();
     };
 
-    window.setTimeout(
-      () => document.addEventListener("pointerdown", this.dismiss, true),
-      0
-    );
+    this.disposeSurface = mountFloatingSurface(this.root, panel, anchor, () => this.close());
   }
 }
