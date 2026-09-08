@@ -634,6 +634,69 @@
   background-color: var(--background-primary);
 }
 
+.ink-pen-advanced {
+  border: 1px solid var(--ink-border-subtle);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--background-secondary) 40%, transparent);
+}
+
+.ink-pen-advanced > summary {
+  padding: 10px 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ink-pen-advanced > .ink-pen-sliders {
+  border: 0;
+  border-top: 1px solid var(--ink-border-subtle);
+  border-radius: 0 0 11px 11px;
+}
+
+.ink-pen-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ink-pen-reset {
+  min-height: 34px;
+  border: 1px solid var(--ink-border-subtle);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.ink-link-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.ink-link-tab {
+  flex: 1;
+  min-height: 38px;
+  border-radius: 9px;
+}
+
+.ink-link-tab.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ink-link-pages {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.ink-link-pages select {
+  width: 100%;
+}
+
 .ink-swatch {
   width: 40px;
   height: 40px;

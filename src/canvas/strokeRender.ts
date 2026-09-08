@@ -111,11 +111,11 @@ const SMOOTHING_PROFILES: Record<
   StrokeSmoothing,
   { smoothing: number; streamline: number }
 > = {
-  raw: { smoothing: 0.22, streamline: 0.06 },
-  low: { smoothing: 0.36, streamline: 0.22 },
-  natural: { smoothing: 0.52, streamline: 0.48 },
-  high: { smoothing: 0.68, streamline: 0.62 },
-  drawing: { smoothing: 0.8, streamline: 0.74 },
+  raw: { smoothing: 0.22, streamline: 0.02 },
+  low: { smoothing: 0.36, streamline: 0.1 },
+  natural: { smoothing: 0.52, streamline: 0.22 },
+  high: { smoothing: 0.68, streamline: 0.42 },
+  drawing: { smoothing: 0.8, streamline: 0.58 },
 };
 
 /** perfect-freehand options resolved per stroke. */

@@ -22,6 +22,16 @@ test("screen/page coordinate conversion is reversible", () => {
   assert.deepEqual(pageToScreen(page.x, page.y, transform), { x: 260, y: 480 });
 });
 
+test("coordinates remain under the pointer across zoom and pan", () => {
+  for (const scale of [1, 2, 4]) {
+    const transform = { rectLeft: 7, rectTop: 13, offsetX: -80, offsetY: 45, scale };
+    const screen = pageToScreen(321, 654, transform);
+    const page = screenToPage(screen.x, screen.y, transform);
+    assert.ok(Math.abs(page.x - 321) < 1e-9);
+    assert.ok(Math.abs(page.y - 654) < 1e-9);
+  }
+});
+
 test("pressure handles zero, invalid and non-pen input safely", () => {
   assert.equal(normalizedPressure("pen", 0), 0.03);
   assert.equal(normalizedPressure("pen", Number.NaN), 0.5);

@@ -7,12 +7,15 @@ import {
   Platform,
   Setting,
   App,
+  TFile,
 } from "obsidian";
 import { setToolIcon } from "./icons";
 import type InkStudioPlugin from "../main";
 import {
   CanvasTool,
   InkDocument,
+  InkLinkRegion,
+  InkLinkTarget,
   InkPage,
   PageTemplate,
   ShapeKind,
@@ -35,6 +38,7 @@ import { StickerPicker } from "./stickerPicker";
 import { ColorPopover } from "./colorPopover";
 import { TemplateModal } from "./templateModal";
 import { TextBoxModal } from "./textModal";
+import { LinkModal } from "./linkModal";
 import {
   FloatingToolbarController,
   type FloatingToolbarState,
@@ -1499,6 +1503,9 @@ export class InkView extends TextFileView implements EngineHost {
   isTiltEnabled(): boolean {
     return this.plugin.settings.tiltEnabled;
   }
+  usePredictedInk(): boolean {
+    return this.plugin.settings.predictedInk;
+  }
   getHistoryLimit(): number {
     return Math.max(10, Math.min(120, this.plugin.settings.historyLimit));
   }
@@ -1596,6 +1603,19 @@ export class InkView extends TextFileView implements EngineHost {
       return;
     }
     const menu = new Menu();
+    const linked = this.engine.getSelectedLink();
+    menu.addItem((i) =>
+      i
+        .setTitle(linked ? "Edit link…" : "Create link…")
+        .setIcon("link")
+        .onClick(() => this.openLinkModal(linked))
+    );
+    if (linked) {
+      menu.addItem((i) => i.setTitle("Open link").setIcon("external-link").onClick(() => void this.openInkLink(linked.target)));
+      menu.addItem((i) => i.setTitle("Copy destination").setIcon("copy").onClick(() => void navigator.clipboard.writeText(this.linkTargetText(linked.target))));
+      menu.addItem((i) => i.setTitle("Remove link").setIcon("unlink").onClick(() => this.engine.removeSelectedLink()));
+    }
+    menu.addSeparator();
     menu.addItem((i) =>
       i
         .setTitle(`Tidy up (${count} strokes)…`)
@@ -1617,6 +1637,12 @@ export class InkView extends TextFileView implements EngineHost {
     menu.addSeparator();
     menu.addItem((i) =>
       i
+        .setTitle("Recolor with active color")
+        .setIcon("palette")
+        .onClick(() => this.engine.recolorSelectedStrokes(this.currentColor))
+    );
+    menu.addItem((i) =>
+      i
         .setTitle("Delete strokes")
         .setIcon("trash-2")
         .onClick(() => this.engine.deleteSelectedStrokes())
@@ -1628,5 +1654,50 @@ export class InkView extends TextFileView implements EngineHost {
         .onClick(() => this.engine.clearStrokeSelection())
     );
     menu.showAtPosition({ x: anchor.x, y: anchor.y });
+  }
+
+  private openLinkModal(link: InkLinkRegion | null): void {
+    new LinkModal(this.app, { target: link?.target, label: link?.label }, (target, label) => {
+      this.engine.createOrUpdateSelectedLink(target, label);
+      new Notice(link ? "Ink Studio: link updated." : "Ink Studio: link created.");
+    }).open();
+  }
+
+  private linkTargetText(target: InkLinkTarget): string {
+    if (target.type === "url") return target.url;
+    if (target.type === "ink-page") return `${target.path}#page=${target.pageId}`;
+    if (target.type === "heading") return `${target.path}#${target.heading}`;
+    if (target.type === "block") return `${target.path}#^${target.blockId}`;
+    return target.path;
+  }
+
+  private async openInkLink(target: InkLinkTarget): Promise<void> {
+    try {
+      if (target.type === "url") {
+        window.open(target.url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      if (target.type === "heading" || target.type === "block") {
+        const suffix = target.type === "heading" ? `#${target.heading}` : `#^${target.blockId}`;
+        await this.app.workspace.openLinkText(`${target.path}${suffix}`, this.file?.path ?? "", true);
+        return;
+      }
+      const file = this.app.vault.getAbstractFileByPath(target.path);
+      if (!(file instanceof TFile)) {
+        new Notice("Ink Studio: linked file no longer exists.");
+        return;
+      }
+      const leaf = this.app.workspace.getLeaf(true);
+      await leaf.openFile(file);
+      if (target.type === "ink-page") {
+        const opened = leaf.view;
+        if (!(opened instanceof InkView) || !opened.engine.goToPageId(target.pageId)) {
+          new Notice("Ink Studio: linked page no longer exists; the file was opened.");
+        }
+      }
+    } catch (error) {
+      console.error("Ink Studio: failed to open link", error);
+      new Notice("Ink Studio: could not open this link.");
+    }
   }
 }

@@ -71,7 +71,7 @@ export function pointVelocity(previous: TimedPoint | null, current: TimedPoint):
 }
 
 /** Pressure remains primary. Speed only adds a bounded secondary modulation:
- * slow movement gets at most 8% thicker, fast movement at most 28% thinner. */
+ * slow movement gets at most 8% thicker, fast movement at most 18% thinner. */
 export function combinePressureAndSpeed(
   pressure: number,
   velocity: number,
@@ -80,7 +80,7 @@ export function combinePressureAndSpeed(
   const effect = clamp01(speedEffectPct / 100);
   if (effect === 0 || !Number.isFinite(velocity) || velocity < 0) return clamp01(pressure);
   const speed = velocity / (velocity + 0.85);
-  const factor = 1 + effect * (0.08 * (1 - speed) - 0.28 * speed);
+  const factor = 1 + effect * (0.08 * (1 - speed) - 0.18 * speed);
   return Math.max(0.03, Math.min(1, pressure * factor));
 }
 
@@ -160,7 +160,19 @@ export function reduceStrokePoints(
   minDistance: number,
   cornerDegrees = 22
 ): StrokePoint[] {
-  if (points.length <= 2) return points.slice();
+  if (points.length <= 3) return points.slice();
+  let length = 0;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index];
+    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+    if (index > 0) length += Math.hypot(point.x - points[index - 1].x, point.y - points[index - 1].y);
+  }
+  const span = Math.max(maxX - minX, maxY - minY);
+  // Dots, punctuation, tiny loops and small handwriting keep every hardware
+  // sample so the committed shape cannot jump after pen-up.
+  if (length < minDistance * 3 && span < minDistance * 2) return points.slice();
   const kept: StrokePoint[] = [points[0]];
   const cornerCos = Math.cos((cornerDegrees * Math.PI) / 180);
   for (let index = 1; index < points.length - 1; index++) {
@@ -174,8 +186,10 @@ export function reduceStrokePoints(
     const by = next.y - current.y;
     const lengths = Math.hypot(ax, ay) * Math.hypot(bx, by);
     const cosine = lengths > 0 ? (ax * bx + ay * by) / lengths : 1;
-    const pressureChanged = Math.abs(current.p - previous.p) >= 0.02;
-    if (d >= minDistance || cosine < cornerCos || pressureChanged) kept.push(current);
+    const pressureChanged = Math.abs(current.p - previous.p) >= 0.012;
+    const localTurn = cosine < cornerCos;
+    const subtleTurn = cosine < Math.cos((9 * Math.PI) / 180) && d >= minDistance * 0.35;
+    if (d >= minDistance || localTurn || subtleTurn || pressureChanged) kept.push(current);
   }
   kept.push(points[points.length - 1]);
   return kept;

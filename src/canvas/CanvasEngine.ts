@@ -30,7 +30,6 @@ import {
   normalizedPressure,
   screenToPage,
   shouldKeepSample,
-  smoothPoint,
 } from "./inputMath";
 import {
   applyPressureCurve,
@@ -44,6 +43,15 @@ import {
   smoothPressure,
   type TimedPoint,
 } from "./inkProcessing";
+import { newStabilizerState, stabilizePoint, type StabilizerState } from "./stabilizer";
+import {
+  createLinkRegion,
+  duplicatePageWithLinks,
+  hitTestLink,
+  linkForSelection,
+  reconcilePageLinks,
+} from "./linkRegions";
+import type { InkLinkRegion, InkLinkTarget } from "../types";
 
 /**
  * The host (InkView) supplies tool state, resolves external assets (PDF page
@@ -66,6 +74,7 @@ export interface EngineHost {
   getPalmContactSize(): number;
   getPenGuardMs(): number;
   isTiltEnabled(): boolean;
+  usePredictedInk(): boolean;
   getHistoryLimit(): number;
   /**
    * Synchronously return a renderable background / image from the host's
@@ -98,6 +107,7 @@ interface PageSnapshot {
   strokes: Stroke[];
   images: InkImage[];
   texts: InkText[];
+  links: InkLinkRegion[];
 }
 
 interface PageHistory {
@@ -237,6 +247,8 @@ export class CanvasEngine {
   private activePointerId: number | null = null;
   private activePointerType: string | null = null;
   private current: Stroke | null = null;
+  /** Visual-only future samples; never committed or serialised. */
+  private predictedCurrent: Stroke | null = null;
   private simulate = false;
   private penLastSeen = 0;
   private erasing = false;
@@ -298,9 +310,8 @@ export class CanvasEngine {
   /** Edge offset (±RULER_H/2 in ruler-local y) the active stroke snaps to. */
   private rulerSnapEdge: number | null = null;
 
-  // Input stabilization (EMA smoothing of raw points)
-  private stabAlpha = 1;
-  private stabLast: StrokePoint | null = null;
+  // Velocity- and corner-adaptive input stabilization.
+  private stabilizer: StabilizerState = newStabilizerState();
   private pressureLast: number | null = null;
   private sampleLast: TimedPoint | null = null;
   private activePenConfig: PenConfig | null = null;
@@ -459,10 +470,8 @@ export class CanvasEngine {
   duplicatePage(index = this.pageIndex): void {
     const source = this.doc.pages[index];
     if (!source) return;
-    const copy = JSON.parse(JSON.stringify(source)) as InkPage;
-    copy.id = makeId("pg-");
+    const copy = duplicatePageWithLinks(source, makeId("pg-"), () => makeId("st-"));
     copy.name = source.name ? `${source.name} copy` : undefined;
-    copy.strokes = copy.strokes.map((stroke) => ({ ...stroke, id: makeId("st-") }));
     copy.images = copy.images.map((image) => ({ ...image, id: makeId("img-") }));
     copy.texts = copy.texts.map((text) => ({ ...text, id: makeId("tx-") }));
     this.doc.pages.splice(index + 1, 0, copy);
@@ -741,8 +750,8 @@ export class CanvasEngine {
     this.liveCtx.save();
     this.paperPath(this.liveCtx);
     this.liveCtx.clip();
-    if (this.current) {
-      drawStroke(this.liveCtx, this.current, rc, this.simulate);
+    if (this.predictedCurrent ?? this.current) {
+      drawStroke(this.liveCtx, (this.predictedCurrent ?? this.current)!, rc, this.simulate);
     }
     if (this.shapeDrag) {
       for (const stroke of this.buildShapeStrokes(this.shapeDrag)) {
@@ -778,6 +787,15 @@ export class CanvasEngine {
     const c = this.liveCtx;
     const px = 1 / this.viewScale;
     c.save();
+    c.strokeStyle = "rgba(59, 130, 246, 0.32)";
+    c.lineWidth = 1.3 * px;
+    for (const link of this.page.links ?? []) {
+      const b = link.bounds;
+      c.beginPath();
+      c.moveTo(b.minX, b.maxY + 3 * px);
+      c.lineTo(b.maxX, b.maxY + 3 * px);
+      c.stroke();
+    }
     if (this.lassoPath && this.lassoPath.length > 1) {
       c.strokeStyle = "#3b82f6";
       c.lineWidth = 1.6 * px;
@@ -952,6 +970,11 @@ export class CanvasEngine {
 
     if (path.length < 8 || area < 400) {
       const pt = path[0];
+      const tappedLink = this.selectLinkAtPagePoint(pt.x, pt.y);
+      if (tappedLink) {
+        this.host.onStrokeSelection(this.selectedStrokeIds.size, this.selectionAnchor());
+        return;
+      }
       const b = this.selectionBBox;
       if (
         b &&
@@ -1024,6 +1047,51 @@ export class CanvasEngine {
     return this.page.strokes.filter((s) => this.selectedStrokeIds.has(s.id));
   }
 
+  getSelectedLink(): InkLinkRegion | null {
+    return linkForSelection(this.page, this.selectedStrokeIds);
+  }
+
+  createOrUpdateSelectedLink(target: InkLinkTarget, label?: string): InkLinkRegion | null {
+    const strokes = this.getSelectedStrokes();
+    if (strokes.length === 0) return null;
+    this.pushHistory();
+    const existing = this.getSelectedLink();
+    const next = createLinkRegion(this.page.id, strokes, target, existing?.id ?? makeId("ln-"), label);
+    if (!next) return null;
+    const links = this.page.links ?? [];
+    this.page.links = existing
+      ? links.map((link) => link.id === existing.id ? next : link)
+      : [...links, next];
+    this.drawLive();
+    this.host.onChange();
+    return next;
+  }
+
+  removeSelectedLink(): void {
+    const selected = this.getSelectedLink();
+    if (!selected) return;
+    this.pushHistory();
+    this.page.links = (this.page.links ?? []).filter((link) => link.id !== selected.id);
+    this.drawLive();
+    this.host.onChange();
+  }
+
+  selectLinkAtPagePoint(x: number, y: number): InkLinkRegion | null {
+    const link = hitTestLink(this.page, x, y, 12 / Math.max(this.viewScale, 0.01));
+    if (!link) return null;
+    this.selectedStrokeIds = new Set(link.strokeIds);
+    this.updateSelectionBBox();
+    this.drawLive();
+    return link;
+  }
+
+  goToPageId(pageId: string): boolean {
+    const index = this.doc.pages.findIndex((page) => page.id === pageId);
+    if (index < 0) return false;
+    this.goToPage(index);
+    return true;
+  }
+
   /** Copy only strokes about to be mutated so older shallow history snapshots
    * remain immutable without cloning every point on the page. */
   private detachSelectedStrokes(): void {
@@ -1049,6 +1117,7 @@ export class CanvasEngine {
     this.page.strokes = this.page.strokes
       .filter((s) => !this.selectedStrokeIds.has(s.id))
       .concat(newStrokes);
+    reconcilePageLinks(this.page);
     this.clearStrokeSelection();
     this.redrawBase();
     this.drawLive();
@@ -1060,6 +1129,17 @@ export class CanvasEngine {
     this.replaceSelectedStrokes([]);
   }
 
+  recolorSelectedStrokes(color: string): void {
+    if (this.selectedStrokeIds.size === 0) return;
+    this.pushHistory();
+    this.page.strokes = this.page.strokes.map((stroke) =>
+      this.selectedStrokeIds.has(stroke.id) ? { ...stroke, color } : stroke
+    );
+    this.redrawBase();
+    this.drawLive();
+    this.host.onChange();
+  }
+
   /** OCR result for a lasso selection: text box at the selection's top-left. */
   applyOcrToSelection(text: string, size: number, color: string, remove: boolean): void {
     const b = this.selectionBBox;
@@ -1069,6 +1149,7 @@ export class CanvasEngine {
       this.page.strokes = this.page.strokes.filter(
         (s) => !this.selectedStrokeIds.has(s.id)
       );
+      reconcilePageLinks(this.page);
     }
     const t: InkText = { id: makeId("tx-"), text, x: b.minX, y: b.minY, size, color };
     this.page.texts.push(t);
@@ -1618,7 +1699,7 @@ export class CanvasEngine {
     this.shapeDrag = null;
     this.textGesture = null;
     this.rulerGesture = null;
-    this.stabLast = null;
+    this.stabilizer = newStabilizerState();
     this.pressureLast = null;
     this.sampleLast = null;
     this.activePenConfig = null;
@@ -1801,9 +1882,8 @@ export class CanvasEngine {
     const config = isPenFamily ? this.host.getToolConfig(tool) : null;
     const thin = config ? pressurePctToThinning(config.pressurePct) : 0;
     const stabPct = config ? config.stabilizationPct : 0;
-    // EMA smoothing: 0% → raw input, 100% → heavy averaging (smooth but laggy).
-    this.stabAlpha = 1 - 0.9 * (Math.max(0, Math.min(100, stabPct)) / 100);
-    this.stabLast = null;
+    // Adaptive smoothing follows fast motion and corners more closely to limit lag.
+    this.stabilizer = newStabilizerState();
     this.pressureLast = null;
     this.activePenConfig = config;
     const sampleTime = monotonicTimestamp(e.timeStamp, null, performance.now());
@@ -1839,20 +1919,18 @@ export class CanvasEngine {
   }
 
   /** Apply stabilization + ruler snapping to one raw input point. */
-  private processPoint(raw: StrokePoint): StrokePoint {
+  private processPoint(raw: StrokePoint, velocity: number): StrokePoint {
     let pt = raw;
     if (this.rulerSnapEdge !== null && this.ruler) {
       const proj = this.projectToRulerEdge(pt.x, pt.y, this.rulerSnapEdge);
       pt = { x: proj.x, y: proj.y, p: pt.p };
     }
-    if (this.stabAlpha < 1) {
-      const smoothed = smoothPoint(this.stabLast, pt, this.stabAlpha);
-      // Pressure has its own low-latency filter; stabilization moves geometry
-      // only and must not smooth pressure a second time.
-      this.stabLast = { ...smoothed, p: pt.p };
-      pt = { ...this.stabLast };
-    }
-    return pt;
+    return stabilizePoint(
+      this.stabilizer,
+      pt,
+      velocity,
+      this.activePenConfig?.stabilizationPct ?? 0
+    ).point;
   }
 
   private processPressure(e: PointerEvent, velocity: number): number {
@@ -1887,6 +1965,7 @@ export class CanvasEngine {
    * changing the visible path. */
   private appendStrokeSamples(e: PointerEvent): void {
     if (!this.current) return;
+    this.predictedCurrent = null;
     const coalesced =
       typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
     const events = orderedUniqueSamples([...coalesced, e]);
@@ -1905,11 +1984,25 @@ export class CanvasEngine {
         x: mapped.x,
         y: mapped.y,
         p: this.processPressure(ev, velocity),
-      });
+      }, velocity);
       const last = this.current.points[this.current.points.length - 1];
       if (!shouldKeepSample(last, next, minDistance)) continue;
       this.current.points.push(next);
     }
+  }
+
+  private updatePredictedPreview(e: PointerEvent): void {
+    if (!this.current || e.pointerType !== "pen" || !this.host.usePredictedInk()) return;
+    const predicted = typeof e.getPredictedEvents === "function" ? e.getPredictedEvents() : [];
+    if (predicted.length === 0) return;
+    const points = this.current.points.slice();
+    for (const event of orderedUniqueSamples(predicted)) {
+      const mapped = this.toPage(event);
+      const last = points[points.length - 1];
+      if (Math.hypot(mapped.x - last.x, mapped.y - last.y) < 0.05 / Math.max(this.viewScale, 0.01)) continue;
+      points.push({ x: mapped.x, y: mapped.y, p: last.p });
+    }
+    this.predictedCurrent = points.length === this.current.points.length ? null : { ...this.current, points };
   }
 
   private handlePointerMove(e: PointerEvent): void {
@@ -2049,6 +2142,7 @@ export class CanvasEngine {
 
     if (!this.current) return;
     this.appendStrokeSamples(e);
+    this.updatePredictedPreview(e);
     this.queueLiveRedraw();
   }
 
@@ -2190,6 +2284,7 @@ export class CanvasEngine {
       // Normalise the bbox (a mirror-drag can invert min/max).
       this.strokeScale = null;
       this.updateSelectionBBox();
+      reconcilePageLinks(this.page);
       this.drawLive();
       this.finishGesture();
       return;
@@ -2197,6 +2292,7 @@ export class CanvasEngine {
 
     if (this.strokeMove) {
       this.strokeMove = null;
+      reconcilePageLinks(this.page);
       this.finishGesture();
       return;
     }
@@ -2233,10 +2329,10 @@ export class CanvasEngine {
       if (e.type === "pointerup") this.appendStrokeSamples(e);
       // Ignore a lone tap that produced no real stroke.
       if (this.current.points.length >= 1) {
-        this.current.points = reduceStrokePoints(
-          this.current.points,
-          0.18 / Math.max(this.viewScale, 0.01)
-        );
+        const handwriting = this.current.tool === "pen" || this.current.tool === "pencil";
+        if (!handwriting) {
+          this.current.points = reduceStrokePoints(this.current.points, 0.18 / Math.max(this.viewScale, 0.01));
+        }
         this.page.strokes.push(this.current);
         // Incremental commit: draw just this stroke onto base, clipped to the
         // paper like a full redraw would be.
@@ -2258,8 +2354,9 @@ export class CanvasEngine {
         this.gestureChanged = true;
       }
       this.current = null;
+      this.predictedCurrent = null;
       this.rulerSnapEdge = null;
-      this.stabLast = null;
+      this.stabilizer = newStabilizerState();
       this.pressureLast = null;
       this.sampleLast = null;
       this.activePenConfig = null;
@@ -2275,13 +2372,14 @@ export class CanvasEngine {
     this.strokeScale = null;
     this.activePointerType = null;
     this.current = null;
+    this.predictedCurrent = null;
     this.erasing = false;
     this.imageGesture = null;
     this.shapeDrag = null;
     this.textGesture = null;
     this.rulerGesture = null;
     this.rulerSnapEdge = null;
-    this.stabLast = null;
+    this.stabilizer = newStabilizerState();
     this.pressureLast = null;
     this.sampleLast = null;
     this.activePenConfig = null;
@@ -2316,6 +2414,7 @@ export class CanvasEngine {
       }
     }
     if (removed) {
+      reconcilePageLinks(this.page);
       this.gestureChanged = true;
     }
     return removed;
@@ -2374,6 +2473,7 @@ export class CanvasEngine {
       strokes: this.page.strokes.slice(),
       images: this.page.images.slice(),
       texts: this.page.texts.slice(),
+      links: (this.page.links ?? []).map((link) => ({ ...link, strokeIds: [...link.strokeIds], bounds: { ...link.bounds } })),
     };
   }
 
@@ -2381,6 +2481,7 @@ export class CanvasEngine {
     this.page.strokes = s.strokes;
     this.page.images = s.images;
     this.page.texts = s.texts ?? [];
+    this.page.links = s.links ?? [];
     // Selection may point at an element that no longer exists.
     if (this.selectedImageId && !this.page.images.some((i) => i.id === this.selectedImageId)) {
       this.setSelection(null);
@@ -2438,6 +2539,7 @@ export class CanvasEngine {
     this.page.strokes = [];
     this.page.images = [];
     this.page.texts = [];
+    this.page.links = [];
     this.setSelection(null);
     this.redrawBase();
     this.drawLive();

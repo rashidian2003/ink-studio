@@ -67,6 +67,8 @@ export interface InkStudioSettings {
   palmContactSizePx: number;
   /** How long touch remains guarded after the last pen event. */
   penGuardMs: number;
+  /** Use Chromium-predicted pen samples for live display only. */
+  predictedInk: boolean;
   /** Last used colour, restored on new notes. */
   color: string;
   /** Recently used colours shown as quick swatches in the toolbar. */
@@ -110,6 +112,7 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
   inputMode: "pen-only",
   palmContactSizePx: 34,
   penGuardMs: 900,
+  predictedInk: true,
   color: "#1a1a1a",
   recentColors: ["#1a1a1a", "#e03131", "#1971c2", "#2f9e44", "#f08c00"],
   toolSizes: {
@@ -134,7 +137,7 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
       pressureSmoothingPct: 28,
       speedEffectPct: 10,
       smoothing: "natural",
-      minWidthPct: 8,
+      minWidthPct: 24,
       maxWidthPct: 100,
       taperStartPct: 8,
       taperEndPct: 12,
@@ -155,7 +158,7 @@ export const DEFAULT_SETTINGS: InkStudioSettings = {
       pressureSmoothingPct: 22,
       speedEffectPct: 14,
       smoothing: "low",
-      minWidthPct: 6,
+      minWidthPct: 18,
       maxWidthPct: 100,
       taperStartPct: 4,
       taperEndPct: 8,
@@ -279,6 +282,14 @@ export class InkStudioSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("Predict pen movement")
+      .setDesc("Reduce perceived latency using temporary predicted points. Predicted points are never saved.")
+      .addToggle((toggle) => toggle.setValue(this.plugin.settings.predictedInk).onChange(async (value) => {
+        this.plugin.settings.predictedInk = value;
+        await this.plugin.saveSettings();
+      }));
 
     containerEl.createEl("h3", { text: "Appearance" });
 

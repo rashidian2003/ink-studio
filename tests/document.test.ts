@@ -91,6 +91,14 @@ test("new render dynamics round-trip without affecting legacy strokes", () => {
   });
 });
 
+test("link regions serialize and legacy pages parse with empty links", () => {
+  const legacy = parseDocument(JSON.stringify({ version: 1, app: "ink-studio", mode: "page", pageSize: "a4", pages: [{ id: "p", width: 10, height: 10, strokes: [], images: [], texts: [] }] }));
+  assert.deepEqual(legacy.pages[0].links, []);
+  legacy.pages[0].links = [{ id: "l", pageId: "p", strokeIds: ["s"], bounds: { minX: 1, minY: 2, maxX: 3, maxY: 4 }, target: { type: "url", url: "https://chatgpt.com/c/test" } }];
+  const parsed = parseDocument(serializeDocument(legacy));
+  assert.equal(parsed.pages[0].links?.[0].target.type, "url");
+});
+
 test("malformed content fails safe to a usable empty document", () => {
   const document = parseDocument("{broken");
   assert.equal(document.app, "ink-studio");

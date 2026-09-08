@@ -76,6 +76,15 @@ test("point reduction removes redundant samples but preserves corners", () => {
   ]);
 });
 
+test("short punctuation strokes and pressure changes are never reduced away", () => {
+  const short = [
+    { x: 0, y: 0, p: 0.2 },
+    { x: 0.05, y: 0.02, p: 0.2 },
+    { x: 0.1, y: 0.03, p: 0.7 },
+  ];
+  assert.deepEqual(reduceStrokePoints(short, 0.2), short);
+});
+
 test("palm policy blocks large or guarded touch near pen activity", () => {
   assert.equal(
     shouldRejectTouchContact("pen-only", 50, 30, 1000, 1200, 34, 900),

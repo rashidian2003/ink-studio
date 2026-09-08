@@ -100,6 +100,31 @@ export interface Stroke {
   points: StrokePoint[];
 }
 
+export interface InkBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export type InkLinkTarget =
+  | { type: "vault-file"; path: string }
+  | { type: "ink-page"; path: string; pageId: string }
+  | { type: "heading"; path: string; heading: string }
+  | { type: "block"; path: string; blockId: string }
+  | { type: "url"; url: string };
+
+export interface InkLinkRegion {
+  id: string;
+  pageId: string;
+  strokeIds: string[];
+  bounds: InkBounds;
+  polygon?: Array<{ x: number; y: number }>;
+  target: InkLinkTarget;
+  label?: string;
+  createdAt?: number;
+}
+
 /**
  * A page background rendered beneath images and ink. For PDF pages the source
  * file stays untouched in the vault; we only reference it and render it at
@@ -159,6 +184,8 @@ export interface InkPage {
   images: InkImage[];
   texts: InkText[];
   strokes: Stroke[];
+  /** Interactive regions attached to strokes; absent in legacy files. */
+  links?: InkLinkRegion[];
 }
 
 export type CanvasMode = "page" | "infinite";
@@ -198,7 +225,7 @@ export function makeId(prefix = ""): string {
 }
 
 export function newPage(width = A4_WIDTH, height = A4_HEIGHT): InkPage {
-  return { id: makeId("pg-"), width, height, images: [], texts: [], strokes: [] };
+  return { id: makeId("pg-"), width, height, images: [], texts: [], strokes: [], links: [] };
 }
 
 /** True when a page has no user content (safe to silently replace/delete). */
@@ -247,6 +274,7 @@ export function parseDocument(raw: string): InkDocument {
             images: Array.isArray(pg.images) ? pg.images : [],
             texts: Array.isArray(pg.texts) ? pg.texts : [],
             strokes: Array.isArray(pg.strokes) ? pg.strokes : [],
+            links: Array.isArray(pg.links) ? pg.links : [],
           }))
         : [newPage()];
     return {
