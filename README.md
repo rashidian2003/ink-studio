@@ -125,6 +125,16 @@ Pressure is read from `PointerEvent.pressure`; for mouse/touch it's simulated
 from velocity by perfect-freehand. `Settings → Pressure sensitivity`
 (off / subtle / natural / dramatic) tunes how strongly it maps to width.
 
+## Install or update with BRAT
+
+In Obsidian, enable BRAT and add `rashidian2003/ink-studio` using **Add a beta
+plugin**, selecting the latest version. Then enable **Ink Studio** in Community
+plugins. For an existing installation, use BRAT's plugin update command.
+
+Release **0.19.0** includes the modernized pen inspector and pane-aware floating
+controls. Each GitHub release provides `main.js`, `manifest.json`, and
+`styles.css` as individual assets, ready for BRAT or manual installation.
+
 ## Build
 
 Fish shell (dev machine only):
